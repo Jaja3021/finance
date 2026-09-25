@@ -45,3 +45,6 @@ next-env.d.ts
 /data
 /backups
 *.log
+
+.vercel
+.env*
