@@ -60,18 +60,26 @@ export default async function Dashboard() {
         <NetWorthCard userId={user.id} home={home} />
       </Suspense>
 
-      <div className="grid grid-cols-1 items-start gap-6 md:grid-cols-2 [&>*]:min-w-0">
-        <div className="space-y-6">
+      {/* Two independent columns so a tall card never leaves a hole beside it;
+          the last card in each column stretches so both columns end together. */}
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 [&>*]:min-w-0">
+        <div className="flex flex-col gap-6">
           <Suspense fallback={<CardSkeleton title="Today" />}>
             <TodayCard userId={user.id} home={home} />
           </Suspense>
           <DebtsCard userId={user.id} home={home} />
+          <div className="flex flex-1 flex-col [&>section]:flex-1">
+            <BudgetsCard userId={user.id} home={home} />
+          </div>
         </div>
-        <Suspense fallback={<CardSkeleton title="Coach" note="Looking over your spending for today’s tips…" />}>
-          <CoachCard userId={user.id} home={home} />
-        </Suspense>
-        <BudgetsCard userId={user.id} home={home} />
-        <BillsCard userId={user.id} />
+        <div className="flex flex-col gap-6">
+          <Suspense fallback={<CardSkeleton title="Coach" note="Looking over your spending for today’s tips…" />}>
+            <CoachCard userId={user.id} home={home} />
+          </Suspense>
+          <div className="flex flex-1 flex-col [&>section]:flex-1">
+            <BillsCard userId={user.id} />
+          </div>
+        </div>
       </div>
 
       <section className="card">
