@@ -50,10 +50,11 @@ export const EXPORT_VERSION = 1;
 
 /** Everything the user owns, as plain JSON. */
 export async function exportUserData(userId: string) {
-  const { users, accounts, categories, transactions, splits, budgets, bills, holdings, badges } = schema;
+  const { users, accounts, categories, transactions, splits, budgets, bills, holdings, badges, debts, debtPayments } = schema;
   const user = (await db.select().from(users).where(eq(users.id, userId)).get())!;
   const accts = await db.select().from(accounts).where(eq(accounts.ownerId, userId)).all();
   const txs = await db.select().from(transactions).where(eq(transactions.userId, userId)).all();
+  const userDebts = await db.select().from(debts).where(eq(debts.userId, userId)).all();
   return {
     version: EXPORT_VERSION,
     exportedAt: new Date().toISOString(),
@@ -66,6 +67,8 @@ export async function exportUserData(userId: string) {
     bills: await db.select().from(bills).where(eq(bills.userId, userId)).all(),
     holdings: await db.select().from(holdings).where(eq(holdings.userId, userId)).all(),
     badges: await db.select().from(badges).where(eq(badges.userId, userId)).all(),
+    debts: userDebts,
+    debtPayments: userDebts.length ? await db.select().from(debtPayments).where(inArray(debtPayments.debtId, userDebts.map((d) => d.id))).all() : [],
   };
 }
 
@@ -87,6 +90,7 @@ export async function importUserData(userId: string, data: Export) {
     await trx.delete(s.holdings).where(eq(s.holdings.userId, userId)).run();
     await trx.delete(s.accounts).where(eq(s.accounts.ownerId, userId)).run();
     await trx.delete(s.categories).where(eq(s.categories.userId, userId)).run();
+    await trx.delete(s.debts).where(eq(s.debts.userId, userId)).run();
 
     const own = <T extends object>(rows: T[], key: keyof T) => rows.map((r) => ({ ...r, [key]: userId }));
     if (data.categories.length) await trx.insert(s.categories).values(own(data.categories, "userId")).run();
@@ -98,5 +102,11 @@ export async function importUserData(userId: string, data: Export) {
     if (data.budgets.length) await trx.insert(s.budgets).values(own(data.budgets, "userId")).run();
     if (data.bills.length) await trx.insert(s.bills).values(own(data.bills, "userId")).run();
     if (data.holdings.length) await trx.insert(s.holdings).values(own(data.holdings, "userId")).run();
+    // Exports made before debts existed have no debt fields. Proof photos stay
+    // where they were uploaded, so imported payments don't point at them.
+    const debtRows = data.debts ?? [];
+    if (debtRows.length) await trx.insert(s.debts).values(own(debtRows, "userId")).run();
+    const payments = (data.debtPayments ?? []).map((p) => ({ ...p, proofFile: null }));
+    if (payments.length) await trx.insert(s.debtPayments).values(payments).run();
   });
 }
