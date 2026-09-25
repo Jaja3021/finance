@@ -33,18 +33,18 @@ export async function recordFromText(user: { id: string; homeCurrency: string },
   const message = text.trim().slice(0, 1000);
   if (!message) return { reply: "Type or say something like “paid credit card 5k yesterday”.", recorded: [], errors: [], engine: "rules" };
 
-  db.insert(schema.chatMessages).values({ userId: user.id, role: "user", content: message }).run();
+  await db.insert(schema.chatMessages).values({ userId: user.id, role: "user", content: message }).run();
   const { drafts, reply, engine } = await parseMessage({ userId: user.id, homeCurrency: user.homeCurrency }, message);
-  const categories = db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).all();
+  const categories = await db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).all();
 
   const recorded: Recorded[] = [];
   const errors: string[] = [];
   for (const d of drafts) {
     try {
       if (!(d.amount > 0)) throw new Error("Missing amount");
-      const account = resolveAccount(user.id, d.accountName, d.type);
+      const account = await resolveAccount(user.id, d.accountName, d.type);
       if (!account) throw new Error("Add an account first");
-      const to = d.type === "transfer" ? resolveAccount(user.id, d.toAccountName, "transfer", account.id) : null;
+      const to = d.type === "transfer" ? await resolveAccount(user.id, d.toAccountName, "transfer", account.id) : null;
       if (d.type === "transfer" && !to) throw new Error("Couldn't tell which account the money went to");
 
       // "$20" on a peso account: convert at today's rate.
@@ -99,6 +99,6 @@ export async function recordFromText(user: { id: string; homeCurrency: string },
         .join(", ")
     : "";
   const finalReply = recorded.length ? `${reply} ${summary}.`.replace("..", ".") : reply;
-  db.insert(schema.chatMessages).values({ userId: user.id, role: "assistant", content: finalReply }).run();
+  await db.insert(schema.chatMessages).values({ userId: user.id, role: "assistant", content: finalReply }).run();
   return { reply: finalReply, recorded, errors, engine };
 }

@@ -13,7 +13,7 @@ export default async function SharedPage() {
   const user = await requireUser();
 
   // Split expenses: who owes the user what.
-  const splits = db
+  const splits = await db
     .select({ split: schema.splits, tx: schema.transactions, currency: schema.accounts.currency })
     .from(schema.splits)
     .innerJoin(schema.transactions, eq(schema.transactions.id, schema.splits.transactionId))
@@ -35,10 +35,10 @@ export default async function SharedPage() {
   }
   const people = [...byPerson.entries()].sort((a, b) => b[1].open.length - a[1].open.length);
 
-  const hhIds = householdIdsFor(user.id);
-  const households = hhIds.length ? db.select().from(schema.households).where(inArray(schema.households.id, hhIds)).all() : [];
+  const hhIds = await householdIdsFor(user.id);
+  const households = hhIds.length ? await db.select().from(schema.households).where(inArray(schema.households.id, hhIds)).all() : [];
   const members = hhIds.length
-    ? db
+    ? await db
         .select({ householdId: schema.householdMembers.householdId, name: schema.users.name, id: schema.users.id })
         .from(schema.householdMembers)
         .innerJoin(schema.users, eq(schema.users.id, schema.householdMembers.userId))
@@ -46,7 +46,7 @@ export default async function SharedPage() {
         .all()
     : [];
   const sharedAccounts = hhIds.length
-    ? db.select().from(schema.accounts).where(and(inArray(schema.accounts.householdId, hhIds), eq(schema.accounts.archived, false))).all()
+    ? await db.select().from(schema.accounts).where(and(inArray(schema.accounts.householdId, hhIds), eq(schema.accounts.archived, false))).all()
     : [];
 
   return (

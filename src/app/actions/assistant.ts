@@ -18,9 +18,9 @@ export async function sendToAssistant(text: string): Promise<AssistantReply> {
 export async function undoRecorded(ids: string[]) {
   const user = await requireUser();
   if (!ids.length) return;
-  db.delete(schema.transactions)
+  await db.delete(schema.transactions)
     .where(and(eq(schema.transactions.userId, user.id), inArray(schema.transactions.id, ids)))
     .run();
-  db.insert(schema.chatMessages).values({ userId: user.id, role: "assistant", content: "Undone." }).run();
+  await db.insert(schema.chatMessages).values({ userId: user.id, role: "assistant", content: "Undone." }).run();
   revalidatePath("/", "layout");
 }

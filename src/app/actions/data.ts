@@ -47,14 +47,14 @@ export async function addAccount(_: FormState, f: FormData): Promise<FormState> 
   const rate = str(f, "interestRate") ? Number(str(f, "interestRate")) : null;
 
   // Adding an account you already have tops up the existing one instead of creating a duplicate.
-  const existing = db
+  const existing = (await db
     .select()
     .from(schema.accounts)
     .where(and(eq(schema.accounts.ownerId, user.id), eq(schema.accounts.archived, false), eq(schema.accounts.type, type), eq(schema.accounts.currency, currency)))
-    .all()
+    .all())
     .find((a) => (template ? a.institution === template.key : !a.institution && a.name.trim().toLowerCase() === name.trim().toLowerCase()));
   if (existing) {
-    db.update(schema.accounts)
+    await db.update(schema.accounts)
       .set({
         openingBalance: existing.openingBalance + opening,
         creditLimit: existing.creditLimit ?? limit,
@@ -66,7 +66,7 @@ export async function addAccount(_: FormState, f: FormData): Promise<FormState> 
     return { ok: opening ? `Added to your existing ${existing.name}` : `You already have ${existing.name}` };
   }
 
-  db.insert(schema.accounts)
+  await db.insert(schema.accounts)
     .values({
       ownerId: user.id,
       name,
@@ -86,13 +86,13 @@ export async function addAccount(_: FormState, f: FormData): Promise<FormState> 
 export async function updateAccount(_: FormState, f: FormData): Promise<FormState> {
   const user = await requireUser();
   const id = str(f, "id");
-  const acct = db.select().from(schema.accounts).where(and(eq(schema.accounts.id, id), eq(schema.accounts.ownerId, user.id))).get();
+  const acct = await db.select().from(schema.accounts).where(and(eq(schema.accounts.id, id), eq(schema.accounts.ownerId, user.id))).get();
   if (!acct) return { error: "Only the owner can edit this account" };
   const raw = amountFrom(f, "balance", acct.currency) ?? (str(f, "balance") === "0" ? 0 : null);
   const householdId = str(f, "householdId") || null;
-  if (householdId && !householdIdsFor(user.id).includes(householdId)) return { error: "Not a member of that household" };
+  if (householdId && !(await householdIdsFor(user.id)).includes(householdId)) return { error: "Not a member of that household" };
   const rate = str(f, "interestRate") ? Number(str(f, "interestRate")) : null;
-  db.update(schema.accounts)
+  await db.update(schema.accounts)
     .set({
       name: str(f, "name") || acct.name,
       openingBalance: raw === null ? acct.openingBalance : DEBT.has(acct.type) ? -Math.abs(raw) : raw,
@@ -107,7 +107,7 @@ export async function updateAccount(_: FormState, f: FormData): Promise<FormStat
 
 export async function archiveAccount(f: FormData) {
   const user = await requireUser();
-  db.update(schema.accounts)
+  await db.update(schema.accounts)
     .set({ archived: true })
     .where(and(eq(schema.accounts.id, str(f, "id")), eq(schema.accounts.ownerId, user.id)))
     .run();
@@ -122,7 +122,7 @@ export async function addTransaction(_: FormState, f: FormData): Promise<FormSta
   if (!["income", "expense", "transfer"].includes(type)) return { error: "Pick a type" };
   let acct;
   try {
-    acct = assertAccountAccess(user.id, str(f, "accountId"));
+    acct = await assertAccountAccess(user.id, str(f, "accountId"));
   } catch {
     return { error: "Pick an account" };
   }
@@ -139,7 +139,7 @@ export async function addTransaction(_: FormState, f: FormData): Promise<FormSta
 
   let toAmount: number | null = null;
   if (type === "transfer" && str(f, "toAmount")) {
-    const dest = accessibleAccounts(user.id).find((a) => a.id === str(f, "toAccountId"));
+    const dest = (await accessibleAccounts(user.id)).find((a) => a.id === str(f, "toAccountId"));
     if (dest) toAmount = amountFrom(f, "toAmount", dest.currency);
   }
 
@@ -168,9 +168,9 @@ export async function addTransaction(_: FormState, f: FormData): Promise<FormSta
 export async function deleteTransaction(f: FormData) {
   const user = await requireUser();
   const id = str(f, "id");
-  const ids = accessibleAccounts(user.id, true).map((a) => a.id);
+  const ids = (await accessibleAccounts(user.id, true)).map((a) => a.id);
   if (!ids.length) return;
-  db.delete(schema.transactions)
+  await db.delete(schema.transactions)
     .where(and(eq(schema.transactions.id, id), or(eq(schema.transactions.userId, user.id), inArray(schema.transactions.accountId, ids))))
     .run();
   refresh();
@@ -179,12 +179,12 @@ export async function deleteTransaction(f: FormData) {
 /** Correcting a category marks it as user-chosen, which trains future suggestions. */
 export async function setTransactionCategory(txId: string, categoryId: string | null) {
   const user = await requireUser();
-  const ids = accessibleAccounts(user.id, true).map((a) => a.id);
+  const ids = (await accessibleAccounts(user.id, true)).map((a) => a.id);
   const cat = categoryId
-    ? db.select().from(schema.categories).where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, user.id))).get()
+    ? await db.select().from(schema.categories).where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, user.id))).get()
     : null;
   if (categoryId && !cat) return;
-  db.update(schema.transactions)
+  await db.update(schema.transactions)
     .set({ categoryId, categorySource: "user" })
     .where(and(eq(schema.transactions.id, txId), inArray(schema.transactions.accountId, ids)))
     .run();
@@ -198,14 +198,14 @@ export async function suggestCategoryFor(text: string, kind: "income" | "expense
 
 export async function settleSplit(f: FormData) {
   const user = await requireUser();
-  const split = db
+  const split = await db
     .select({ s: schema.splits, userId: schema.transactions.userId })
     .from(schema.splits)
     .innerJoin(schema.transactions, eq(schema.transactions.id, schema.splits.transactionId))
     .where(eq(schema.splits.id, str(f, "id")))
     .get();
   if (!split || split.userId !== user.id) return;
-  db.update(schema.splits).set({ settled: str(f, "settled") !== "0" }).where(eq(schema.splits.id, split.s.id)).run();
+  await db.update(schema.splits).set({ settled: str(f, "settled") !== "0" }).where(eq(schema.splits.id, split.s.id)).run();
   refresh();
 }
 
@@ -214,16 +214,16 @@ export async function settleSplit(f: FormData) {
 export async function saveBudget(_: FormState, f: FormData): Promise<FormState> {
   const user = await requireUser();
   const categoryId = str(f, "categoryId");
-  const cat = db.select().from(schema.categories).where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, user.id))).get();
+  const cat = await db.select().from(schema.categories).where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, user.id))).get();
   if (!cat) return { error: "Pick a category" };
   const limit = amountFrom(f, "limit", user.homeCurrency);
   if (!limit) return { error: "Enter a monthly limit" };
   const alertAt = Math.min(0.99, Math.max(0.5, Number(str(f, "alertAt") || 80) / 100));
-  db.insert(schema.budgets)
+  await db.insert(schema.budgets)
     .values({ userId: user.id, categoryId, monthlyLimit: limit, alertAt })
     .onConflictDoUpdate({ target: [schema.budgets.userId, schema.budgets.categoryId], set: { monthlyLimit: limit, alertAt } })
     .run();
-  checkBadges(user.id);
+  await checkBadges(user.id);
   await generateNotifications(user.id);
   refresh();
   return { ok: `Budget for ${cat.name} saved` };
@@ -231,7 +231,7 @@ export async function saveBudget(_: FormState, f: FormData): Promise<FormState> 
 
 export async function deleteBudget(f: FormData) {
   const user = await requireUser();
-  db.delete(schema.budgets).where(and(eq(schema.budgets.id, str(f, "id")), eq(schema.budgets.userId, user.id))).run();
+  await db.delete(schema.budgets).where(and(eq(schema.budgets.id, str(f, "id")), eq(schema.budgets.userId, user.id))).run();
   refresh();
 }
 
@@ -243,7 +243,7 @@ export async function addCategory(_: FormState, f: FormData): Promise<FormState>
   const icon = str(f, "icon");
   // Only Phosphor keys from the picker; otherwise the icon is chosen from the name.
   const validIcon = icon.startsWith("ph:") && (ICON_KEYS as readonly string[]).includes(icon.slice(3)) ? icon : null;
-  db.insert(schema.categories).values({ userId: user.id, name, kind, icon: validIcon }).onConflictDoNothing().run();
+  await db.insert(schema.categories).values({ userId: user.id, name, kind, icon: validIcon }).onConflictDoNothing().run();
   refresh();
   return { ok: `${name} added` };
 }
@@ -262,7 +262,7 @@ export async function saveBill(_: FormState, f: FormData): Promise<FormState> {
   const parsed = BillSchema.safeParse(Object.fromEntries(f));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const accountId = str(f, "accountId") || null;
-  const acct = accountId ? accessibleAccounts(user.id).find((a) => a.id === accountId) : null;
+  const acct = accountId ? (await accessibleAccounts(user.id)).find((a) => a.id === accountId) : null;
   const currency = acct?.currency ?? user.homeCurrency;
   const amount = amountFrom(f, "amount", currency);
   if (!amount) return { error: "Enter the amount" };
@@ -276,8 +276,8 @@ export async function saveBill(_: FormState, f: FormData): Promise<FormState> {
     matchKey: str(f, "matchKey") || `${normalizeKey(parsed.data.name)}|${currency}`,
   };
   const id = str(f, "id");
-  if (id) db.update(schema.bills).set(values).where(and(eq(schema.bills.id, id), eq(schema.bills.userId, user.id))).run();
-  else db.insert(schema.bills).values(values).run();
+  if (id) await db.update(schema.bills).set(values).where(and(eq(schema.bills.id, id), eq(schema.bills.userId, user.id))).run();
+  else await db.insert(schema.bills).values(values).run();
   await generateNotifications(user.id);
   refresh();
   return { ok: `${parsed.data.name} saved` };
@@ -285,14 +285,14 @@ export async function saveBill(_: FormState, f: FormData): Promise<FormState> {
 
 export async function deleteBill(f: FormData) {
   const user = await requireUser();
-  db.delete(schema.bills).where(and(eq(schema.bills.id, str(f, "id")), eq(schema.bills.userId, user.id))).run();
+  await db.delete(schema.bills).where(and(eq(schema.bills.id, str(f, "id")), eq(schema.bills.userId, user.id))).run();
   refresh();
 }
 
 /** Logs the payment and rolls the due date forward. */
 export async function payBill(f: FormData) {
   const user = await requireUser();
-  const bill = db.select().from(schema.bills).where(and(eq(schema.bills.id, str(f, "id")), eq(schema.bills.userId, user.id))).get();
+  const bill = await db.select().from(schema.bills).where(and(eq(schema.bills.id, str(f, "id")), eq(schema.bills.userId, user.id))).get();
   if (!bill || !bill.accountId) redirect(`/bills?edit=${bill?.id ?? ""}`);
   const { advanceDue } = await import("@/lib/recurring");
   await createTransaction(user.id, {
@@ -304,16 +304,16 @@ export async function payBill(f: FormData) {
     payee: bill.name,
     billId: bill.id,
   });
-  db.update(schema.bills).set({ nextDue: advanceDue(bill.nextDue, bill.frequency) }).where(eq(schema.bills.id, bill.id)).run();
+  await db.update(schema.bills).set({ nextDue: advanceDue(bill.nextDue, bill.frequency) }).where(eq(schema.bills.id, bill.id)).run();
   refresh();
 }
 
 export async function acceptRecurring(f: FormData) {
   const user = await requireUser();
   const { detectRecurring } = await import("@/lib/recurring");
-  const s = detectRecurring(user.id).find((r) => r.matchKey === str(f, "matchKey"));
+  const s = (await detectRecurring(user.id)).find((r) => r.matchKey === str(f, "matchKey"));
   if (!s) return;
-  db.insert(schema.bills)
+  await db.insert(schema.bills)
     .values({
       userId: user.id,
       accountId: s.accountId,
@@ -331,7 +331,7 @@ export async function acceptRecurring(f: FormData) {
 
 export async function dismissRecurring(f: FormData) {
   const user = await requireUser();
-  db.insert(schema.dismissedRecurring).values({ userId: user.id, matchKey: str(f, "matchKey") }).onConflictDoNothing().run();
+  await db.insert(schema.dismissedRecurring).values({ userId: user.id, matchKey: str(f, "matchKey") }).onConflictDoNothing().run();
   refresh();
 }
 
@@ -344,7 +344,7 @@ export async function addHolding(_: FormState, f: FormData): Promise<FormState> 
   const quantity = Number(str(f, "quantity").replace(/,/g, ""));
   if (!symbol) return { error: "Search for and pick an instrument" };
   if (!(quantity > 0)) return { error: "Enter how many units you hold" };
-  db.insert(schema.holdings)
+  await db.insert(schema.holdings)
     .values({
       userId: user.id,
       kind,
@@ -353,7 +353,7 @@ export async function addHolding(_: FormState, f: FormData): Promise<FormState> 
       quantity,
     })
     .run();
-  checkBadges(user.id);
+  await checkBadges(user.id);
   refresh();
   return { ok: "Holding added" };
 }
@@ -362,13 +362,13 @@ export async function updateHolding(f: FormData) {
   const user = await requireUser();
   const quantity = Number(str(f, "quantity").replace(/,/g, ""));
   if (!(quantity > 0)) return;
-  db.update(schema.holdings).set({ quantity }).where(and(eq(schema.holdings.id, str(f, "id")), eq(schema.holdings.userId, user.id))).run();
+  await db.update(schema.holdings).set({ quantity }).where(and(eq(schema.holdings.id, str(f, "id")), eq(schema.holdings.userId, user.id))).run();
   refresh();
 }
 
 export async function deleteHolding(f: FormData) {
   const user = await requireUser();
-  db.delete(schema.holdings).where(and(eq(schema.holdings.id, str(f, "id")), eq(schema.holdings.userId, user.id))).run();
+  await db.delete(schema.holdings).where(and(eq(schema.holdings.id, str(f, "id")), eq(schema.holdings.userId, user.id))).run();
   refresh();
 }
 
@@ -378,9 +378,9 @@ export async function createHousehold(_: FormState, f: FormData): Promise<FormSt
   const user = await requireUser();
   const name = str(f, "name") || `${user.name.split(" ")[0]}'s household`;
   const code = crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
-  db.transaction((trx) => {
-    const h = trx.insert(schema.households).values({ name, ownerId: user.id, inviteCode: code }).returning().get();
-    trx.insert(schema.householdMembers).values({ householdId: h.id, userId: user.id }).run();
+  await db.transaction(async (trx) => {
+    const h = await trx.insert(schema.households).values({ name, ownerId: user.id, inviteCode: code }).returning().get();
+    await trx.insert(schema.householdMembers).values({ householdId: h.id, userId: user.id }).run();
   });
   refresh();
   return { ok: `Created. Share invite code ${code}` };
@@ -388,9 +388,9 @@ export async function createHousehold(_: FormState, f: FormData): Promise<FormSt
 
 export async function joinHousehold(_: FormState, f: FormData): Promise<FormState> {
   const user = await requireUser();
-  const h = db.select().from(schema.households).where(eq(schema.households.inviteCode, str(f, "code").toUpperCase())).get();
+  const h = await db.select().from(schema.households).where(eq(schema.households.inviteCode, str(f, "code").toUpperCase())).get();
   if (!h) return { error: "No household with that code" };
-  db.insert(schema.householdMembers).values({ householdId: h.id, userId: user.id }).onConflictDoNothing().run();
+  await db.insert(schema.householdMembers).values({ householdId: h.id, userId: user.id }).onConflictDoNothing().run();
   refresh();
   return { ok: `Joined ${h.name}` };
 }
@@ -398,12 +398,12 @@ export async function joinHousehold(_: FormState, f: FormData): Promise<FormStat
 export async function leaveHousehold(f: FormData) {
   const user = await requireUser();
   const id = str(f, "id");
-  db.transaction((trx) => {
-    trx.delete(schema.householdMembers)
+  await db.transaction(async (trx) => {
+    await trx.delete(schema.householdMembers)
       .where(and(eq(schema.householdMembers.householdId, id), eq(schema.householdMembers.userId, user.id)))
       .run();
     // Stop sharing your own accounts with a household you left.
-    trx.update(schema.accounts)
+    await trx.update(schema.accounts)
       .set({ householdId: null })
       .where(and(eq(schema.accounts.ownerId, user.id), eq(schema.accounts.householdId, id)))
       .run();
@@ -422,7 +422,7 @@ export async function refreshCoach() {
 export async function rateTip(f: FormData) {
   const user = await requireUser();
   const feedback = str(f, "feedback") === "helpful" ? "helpful" : "not_helpful";
-  db.update(schema.coachTips)
+  await db.update(schema.coachTips)
     .set({ feedback })
     .where(and(eq(schema.coachTips.id, str(f, "id")), eq(schema.coachTips.userId, user.id)))
     .run();
@@ -435,7 +435,7 @@ export async function updateProfile(_: FormState, f: FormData): Promise<FormStat
   const user = await requireUser();
   const currency = str(f, "homeCurrency").toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) return { error: "Pick a currency" };
-  db.update(schema.users)
+  await db.update(schema.users)
     .set({ name: str(f, "name") || user.name, homeCurrency: currency })
     .where(eq(schema.users.id, user.id))
     .run();
@@ -447,6 +447,7 @@ export async function snapshotNow(): Promise<FormState> {
   await requireUser();
   const { snapshotDatabase } = await import("@/lib/backup");
   const file = await snapshotDatabase("manual");
+  if (!file) return { ok: "Your data lives in Turso, which keeps its own point-in-time backups. Use “Download my data” for a copy you keep." };
   refresh();
   return { ok: `Backup saved: ${file.split(/[\\/]/).pop()}` };
 }
@@ -487,14 +488,14 @@ export async function quickLogAction(input: { amount: string; categoryId: string
 
 export async function undoQuickLog(id: string) {
   const user = await requireUser();
-  db.delete(schema.transactions).where(and(eq(schema.transactions.id, id), eq(schema.transactions.userId, user.id))).run();
+  await db.delete(schema.transactions).where(and(eq(schema.transactions.id, id), eq(schema.transactions.userId, user.id))).run();
   refresh();
 }
 
 export async function createShortcutKey(_: (FormState & { token?: string }) | undefined, f: FormData): Promise<FormState & { token?: string }> {
   const user = await requireUser();
   const { createApiToken } = await import("@/lib/api-tokens");
-  const token = createApiToken(user.id, str(f, "name") || "My phone");
+  const token = await createApiToken(user.id, str(f, "name") || "My phone");
   refresh();
   return { ok: "Key created. Copy it now; it won't be shown again.", token };
 }
@@ -502,6 +503,6 @@ export async function createShortcutKey(_: (FormState & { token?: string }) | un
 export async function revokeShortcutKey(f: FormData) {
   const user = await requireUser();
   const { revokeApiToken } = await import("@/lib/api-tokens");
-  revokeApiToken(user.id, str(f, "id"));
+  await revokeApiToken(user.id, str(f, "id"));
   refresh();
 }

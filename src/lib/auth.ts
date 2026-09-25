@@ -20,7 +20,7 @@ export const getSessionUser = cache(async (): Promise<CurrentUser | null> => {
   const jar = await cookies();
   const claims = await verifySession(jar.get(SESSION_COOKIE)?.value);
   if (!claims) return null;
-  const user = db
+  const user = await db
     .select()
     .from(schema.users)
     .where(eq(schema.users.id, claims.uid))

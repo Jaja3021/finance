@@ -9,15 +9,18 @@
     "lint": "eslint",
     "seed:demo": "tsx --conditions=react-server --env-file=.env.local scripts/seed-demo.ts",
     "db:generate": "drizzle-kit generate",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/migrate.ts",
+    "vercel-build": "tsx --conditions=react-server scripts/migrate.ts && next build"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",
+    "@libsql/client": "^0.18.0",
     "@phosphor-icons/react": "^2.1.10",
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.2",
+    "@vercel/blob": "^2.8.0",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^13.0.3",
     "date-fns": "^4.4.0",
     "drizzle-orm": "^0.45.3",
     "jose": "^6.2.12",
@@ -30,7 +33,6 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

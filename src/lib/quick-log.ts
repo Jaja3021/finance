@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq } from "drizzle-orm";
 import { format } from "date-fns";
-import { db, sqlite, schema } from "@/db";
+import { db, query, schema } from "@/db";
 import { accessibleAccounts } from "./access";
 import { accountBalances, DEBT_TYPES } from "./finance";
 import { budgetStatus } from "./engagement";
@@ -15,22 +15,22 @@ import { iconText } from "./category-icons";
 
 type User = { id: string; homeCurrency: string };
 
-export function quickOptions(userId: string, kind: "expense" | "income" = "expense") {
+export async function quickOptions(userId: string, kind: "expense" | "income" = "expense") {
   const catUse = new Map(
-    (sqlite.prepare(`SELECT category_id id, COUNT(*) n FROM transactions WHERE user_id = ? AND type = ? GROUP BY category_id`).all(userId, kind) as { id: string; n: number }[]).map((r) => [r.id, r.n]),
+    (await query<{ id: string; n: number }>(`SELECT category_id id, COUNT(*) n FROM transactions WHERE user_id = ? AND type = ? GROUP BY category_id`, [userId, kind])).map((r) => [r.id, r.n]),
   );
   const acctUse = new Map(
-    (sqlite.prepare(`SELECT account_id id, COUNT(*) n FROM transactions WHERE user_id = ? AND type = ? GROUP BY account_id`).all(userId, kind) as { id: string; n: number }[]).map((r) => [r.id, r.n]),
+    (await query<{ id: string; n: number }>(`SELECT account_id id, COUNT(*) n FROM transactions WHERE user_id = ? AND type = ? GROUP BY account_id`, [userId, kind])).map((r) => [r.id, r.n]),
   );
-  const categories = db
+  const categories = (await db
     .select()
     .from(schema.categories)
     .where(and(eq(schema.categories.userId, userId), eq(schema.categories.kind, kind)))
-    .all()
+    .all())
     .sort((a, b) => (catUse.get(b.id) ?? 0) - (catUse.get(a.id) ?? 0) || a.name.localeCompare(b.name))
     .map((c) => ({ id: c.id, name: c.name, icon: c.icon }));
-  const accts = accessibleAccounts(userId).filter((a) => kind === "expense" || !DEBT_TYPES.has(a.type));
-  const bal = accountBalances(accts.map((a) => a.id));
+  const accts = (await accessibleAccounts(userId)).filter((a) => kind === "expense" || !DEBT_TYPES.has(a.type));
+  const bal = await accountBalances(accts.map((a) => a.id));
   const accounts = accts
     .sort((a, b) => (acctUse.get(b.id) ?? 0) - (acctUse.get(a.id) ?? 0))
     .map((a) => ({
@@ -79,7 +79,7 @@ export async function quickLog(
   input: { amount: string | number; category?: string | null; account?: string | null; note?: string | null; type?: "expense" | "income"; date?: string | null },
 ): Promise<Receipt> {
   const type = input.type === "income" ? "income" : "expense";
-  const opts = quickOptions(user.id, type);
+  const opts = await quickOptions(user.id, type);
   const account = pick(opts.accounts, input.account) ?? (input.account ? undefined : opts.accounts[0]);
   if (!account) throw new Error(input.account ? `No account called “${input.account}”` : "Add an account in the app first");
   const category = pick(opts.categories, input.category);
@@ -98,7 +98,7 @@ export async function quickLog(
   });
 
   const finalCat = tx.categoryId ? opts.categories.find((c) => c.id === tx.categoryId) : undefined;
-  const balance = accountBalances([account.id]).get(account.id) ?? 0;
+  const balance = (await accountBalances([account.id])).get(account.id) ?? 0;
   const isDebt = DEBT_TYPES.has(account.type as never);
   const amountText = formatMoney(tx.amount, account.currency);
   const balanceText = isDebt && balance < 0 ? `${formatMoney(-balance, account.currency)} owed` : formatMoney(balance, account.currency);

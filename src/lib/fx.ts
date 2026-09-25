@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { format, subDays } from "date-fns";
 import { db, schema } from "@/db";
 import { currencyDigits } from "./money";
@@ -29,7 +29,7 @@ async function fetchSeries(base: string, quote: string) {
     .map(([date, r]) => ({ base, quote, date, rate: r[quote] }))
     .filter((r) => typeof r.rate === "number");
   if (rows.length) {
-    db.insert(schema.fxRates)
+    await db.insert(schema.fxRates)
       .values(rows)
       .onConflictDoUpdate({
         target: [schema.fxRates.base, schema.fxRates.quote, schema.fxRates.date],
@@ -55,28 +55,43 @@ export async function ensureRates(bases: string[], quote: string) {
       }
     }),
   );
+  await Promise.all(pairs.flatMap((base) => [loadPair(base, quote), loadPair(quote, base)]));
 }
 
-/** Most recent cached rate on or before `date`. Null if we have nothing. */
+// Rates for the pairs ensureRates has seen, oldest first. rateOn reads only
+// from here, so a page can convert many amounts without a query per amount
+// (each one would be a network round trip on a hosted database).
+const loaded = new Map<string, { date: string; rate: number }[]>();
+
+async function loadPair(base: string, quote: string) {
+  const { fxRates } = schema;
+  const rows = await db
+    .select({ date: fxRates.date, rate: fxRates.rate })
+    .from(fxRates)
+    .where(and(eq(fxRates.base, base), eq(fxRates.quote, quote)))
+    .orderBy(fxRates.date)
+    .all();
+  loaded.set(`${base}:${quote}`, rows);
+}
+
+function latestOnOrBefore(key: string, date: string) {
+  const rows = loaded.get(key);
+  if (!rows) return null;
+  let hit: number | null = null;
+  for (const r of rows) {
+    if (r.date > date) break;
+    hit = r.rate;
+  }
+  return hit;
+}
+
+/** Most recent cached rate on or before `date`. Call ensureRates for the pair first. Null if we have nothing. */
 export function rateOn(base: string, quote: string, date = today()): number | null {
   if (base === quote) return 1;
-  const { fxRates } = schema;
-  const direct = db
-    .select({ rate: fxRates.rate })
-    .from(fxRates)
-    .where(and(eq(fxRates.base, base), eq(fxRates.quote, quote), lte(fxRates.date, date)))
-    .orderBy(desc(fxRates.date))
-    .limit(1)
-    .get();
-  if (direct) return direct.rate;
-  const inverse = db
-    .select({ rate: fxRates.rate })
-    .from(fxRates)
-    .where(and(eq(fxRates.base, quote), eq(fxRates.quote, base), lte(fxRates.date, date)))
-    .orderBy(desc(fxRates.date))
-    .limit(1)
-    .get();
-  return inverse ? 1 / inverse.rate : null;
+  const direct = latestOnOrBefore(`${base}:${quote}`, date);
+  if (direct !== null) return direct;
+  const inverse = latestOnOrBefore(`${quote}:${base}`, date);
+  return inverse ? 1 / inverse : null;
 }
 
 /** Converts minor units between currencies (handles differing decimal places). */

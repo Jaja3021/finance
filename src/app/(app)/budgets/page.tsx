@@ -14,7 +14,7 @@ export default async function BudgetsPage(props: PageProps<"/budgets">) {
   const { edit } = await props.searchParams;
   const home = user.homeCurrency;
   const budgets = await budgetStatus(user.id, home);
-  const categories = db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).orderBy(schema.categories.name).all();
+  const categories = await db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).orderBy(schema.categories.name).all();
   const editing = budgets.find((b) => b.id === edit);
   const now = new Date();
   const daysLeft = getDaysInMonth(now) - getDate(now) + 1;

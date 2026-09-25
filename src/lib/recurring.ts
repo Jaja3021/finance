@@ -34,12 +34,12 @@ const median = (xs: number[]) => {
  * Finds expenses that repeat with a near-identical amount on a regular
  * schedule (weekly or monthly) and aren't tracked as bills yet.
  */
-export function detectRecurring(userId: string): RecurringSuggestion[] {
-  const accts = accessibleAccounts(userId);
+export async function detectRecurring(userId: string): Promise<RecurringSuggestion[]> {
+  const accts = await accessibleAccounts(userId);
   if (!accts.length) return [];
   const currencyOf = new Map(accts.map((a) => [a.id, a.currency]));
   const since = format(subDays(new Date(), 200), "yyyy-MM-dd");
-  const rows = db
+  const rows = await db
     .select()
     .from(schema.transactions)
     .where(
@@ -53,19 +53,19 @@ export function detectRecurring(userId: string): RecurringSuggestion[] {
     .all();
 
   const tracked = new Set(
-    db
+    (await db
       .select({ k: schema.bills.matchKey })
       .from(schema.bills)
       .where(eq(schema.bills.userId, userId))
-      .all()
+      .all())
       .map((b) => b.k),
   );
   const dismissed = new Set(
-    db
+    (await db
       .select({ k: schema.dismissedRecurring.matchKey })
       .from(schema.dismissedRecurring)
       .where(eq(schema.dismissedRecurring.userId, userId))
-      .all()
+      .all())
       .map((d) => d.k),
   );
 
@@ -116,10 +116,10 @@ export function detectRecurring(userId: string): RecurringSuggestion[] {
 }
 
 /** When a new expense looks like a tracked bill's payment, roll the bill forward. */
-export function matchBillPayment(userId: string, tx: { payee: string | null; note: string | null; date: string; amount: number; accountId: string; currency: string }) {
+export async function matchBillPayment(userId: string, tx: { payee: string | null; note: string | null; date: string; amount: number; accountId: string; currency: string }) {
   const k = normalizeKey(tx.payee || tx.note);
   if (!k) return null;
-  const bill = db
+  const bill = await db
     .select()
     .from(schema.bills)
     .where(and(eq(schema.bills.userId, userId), eq(schema.bills.matchKey, `${k}|${tx.currency}`), eq(schema.bills.active, true)))
@@ -127,20 +127,20 @@ export function matchBillPayment(userId: string, tx: { payee: string | null; not
   if (!bill) return null;
   const window = differenceInCalendarDays(parseISO(bill.nextDue), parseISO(tx.date));
   if (window > 10 || window < -20) return null;
-  db.update(schema.bills)
+  await db.update(schema.bills)
     .set({ nextDue: advanceDue(bill.nextDue, bill.frequency) })
     .where(eq(schema.bills.id, bill.id))
     .run();
   return bill.id;
 }
 
-export function dueSoon(userId: string, withinDays = 14) {
+export async function dueSoon(userId: string, withinDays = 14) {
   const limit = format(addDays(new Date(), withinDays), "yyyy-MM-dd");
-  return db
+  return (await db
     .select()
     .from(schema.bills)
     .where(and(eq(schema.bills.userId, userId), eq(schema.bills.active, true)))
     .orderBy(schema.bills.nextDue)
-    .all()
+    .all())
     .filter((b) => b.nextDue <= limit);
 }

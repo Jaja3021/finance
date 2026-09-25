@@ -1,7 +1,7 @@
 import "server-only";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { differenceInCalendarDays, format, parseISO } from "date-fns";
-import { db, schema } from "@/db";
+import { db, query, schema } from "@/db";
 import type { PaymentMethod } from "@/db/schema";
 import { notify } from "./engagement";
 import { formatMoney } from "./money";
@@ -16,8 +16,8 @@ export type Debt = typeof schema.debts.$inferSelect;
 export type DebtPayment = typeof schema.debtPayments.$inferSelect;
 
 /** Sum of a debt's logged payments (home-currency minor units). */
-export function paidAmount(debtId: string): number {
-  const rows = db.select({ amount: schema.debtPayments.amount }).from(schema.debtPayments).where(eq(schema.debtPayments.debtId, debtId)).all();
+export async function paidAmount(debtId: string): Promise<number> {
+  const rows = await db.select({ amount: schema.debtPayments.amount }).from(schema.debtPayments).where(eq(schema.debtPayments.debtId, debtId)).all();
   return rows.reduce((s, r) => s + r.amount, 0);
 }
 
@@ -27,34 +27,42 @@ function statusFor(amount: number, paid: number): (typeof schema.DEBT_STATUSES)[
   return "partial";
 }
 
-function refreshStatus(debtId: string) {
-  const debt = db.select().from(schema.debts).where(eq(schema.debts.id, debtId)).get();
+async function refreshStatus(debtId: string) {
+  const debt = await db.select().from(schema.debts).where(eq(schema.debts.id, debtId)).get();
   if (!debt) return;
-  const status = statusFor(debt.amount, paidAmount(debtId));
-  if (status !== debt.status) db.update(schema.debts).set({ status }).where(eq(schema.debts.id, debtId)).run();
+  const status = statusFor(debt.amount, await paidAmount(debtId));
+  if (status !== debt.status) await db.update(schema.debts).set({ status }).where(eq(schema.debts.id, debtId)).run();
 }
 
 export type DebtWithProgress = Debt & { paid: number; remaining: number; proofs: { id: string; file: string }[] };
 
-export function listDebts(userId: string, direction?: "owe" | "owed"): DebtWithProgress[] {
-  const rows = db
+export async function listDebts(userId: string, direction?: "owe" | "owed"): Promise<DebtWithProgress[]> {
+  const rows = await db
     .select()
     .from(schema.debts)
     .where(direction ? and(eq(schema.debts.userId, userId), eq(schema.debts.direction, direction)) : eq(schema.debts.userId, userId))
     .orderBy(desc(schema.debts.status), schema.debts.dueDate, desc(schema.debts.createdAt))
     .all();
+  if (!rows.length) return [];
+  // Two grouped queries instead of two per debt (each is a round trip on Turso).
+  const ids = rows.map((d) => d.id);
+  const [payments, proofs] = await Promise.all([
+    db.select({ debtId: schema.debtPayments.debtId, amount: schema.debtPayments.amount }).from(schema.debtPayments).where(inArray(schema.debtPayments.debtId, ids)).all(),
+    db.select({ debtId: schema.debtProofs.debtId, id: schema.debtProofs.id, file: schema.debtProofs.file }).from(schema.debtProofs).where(inArray(schema.debtProofs.debtId, ids)).all(),
+  ]);
+  const paidBy = new Map<string, number>();
+  for (const p of payments) paidBy.set(p.debtId, (paidBy.get(p.debtId) ?? 0) + p.amount);
   return rows.map((d) => {
-    const paid = paidAmount(d.id);
-    const proofs = db.select({ id: schema.debtProofs.id, file: schema.debtProofs.file }).from(schema.debtProofs).where(eq(schema.debtProofs.debtId, d.id)).all();
-    return { ...d, paid, remaining: Math.max(0, d.amount - paid), proofs };
+    const paid = paidBy.get(d.id) ?? 0;
+    return { ...d, paid, remaining: Math.max(0, d.amount - paid), proofs: proofs.filter((p) => p.debtId === d.id).map(({ id, file }) => ({ id, file })) };
   });
 }
 
-export function getDebt(userId: string, debtId: string): (DebtWithProgress & { payments: DebtPayment[] }) | null {
-  const debt = db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
+export async function getDebt(userId: string, debtId: string): Promise<(DebtWithProgress & { payments: DebtPayment[] }) | null> {
+  const debt = await db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
   if (!debt) return null;
-  const payments = db.select().from(schema.debtPayments).where(eq(schema.debtPayments.debtId, debtId)).orderBy(desc(schema.debtPayments.date), desc(schema.debtPayments.createdAt)).all();
-  const proofs = db.select({ id: schema.debtProofs.id, file: schema.debtProofs.file }).from(schema.debtProofs).where(eq(schema.debtProofs.debtId, debtId)).all();
+  const payments = await db.select().from(schema.debtPayments).where(eq(schema.debtPayments.debtId, debtId)).orderBy(desc(schema.debtPayments.date), desc(schema.debtPayments.createdAt)).all();
+  const proofs = await db.select({ id: schema.debtProofs.id, file: schema.debtProofs.file }).from(schema.debtProofs).where(eq(schema.debtProofs.debtId, debtId)).all();
   const paid = payments.reduce((s, p) => s + p.amount, 0);
   return { ...debt, payments, proofs, paid, remaining: Math.max(0, debt.amount - paid) };
 }
@@ -62,12 +70,19 @@ export function getDebt(userId: string, debtId: string): (DebtWithProgress & { p
 export type DebtTotals = { owe: number; owed: number; net: number };
 
 /** Totals count only the remaining (unpaid) balance of each debt. */
-export function debtTotals(userId: string): DebtTotals {
-  const rows = db.select().from(schema.debts).where(eq(schema.debts.userId, userId)).all();
+export async function debtTotals(userId: string): Promise<DebtTotals> {
+  const [rows, payments] = await Promise.all([
+    db.select().from(schema.debts).where(eq(schema.debts.userId, userId)).all(),
+    query<{ debt_id: string; s: number }>(
+      `SELECT p.debt_id, SUM(p.amount) s FROM debt_payments p JOIN debts d ON d.id = p.debt_id WHERE d.user_id = ? GROUP BY p.debt_id`,
+      [userId],
+    ),
+  ]);
+  const paidBy = new Map(payments.map((p) => [p.debt_id, Number(p.s)]));
   let owe = 0;
   let owed = 0;
   for (const d of rows) {
-    const remaining = Math.max(0, d.amount - paidAmount(d.id));
+    const remaining = Math.max(0, d.amount - (paidBy.get(d.id) ?? 0));
     if (d.direction === "owe") owe += remaining;
     else owed += remaining;
   }
@@ -86,11 +101,11 @@ export type NewDebt = {
   note?: string | null;
 };
 
-export function createDebt(userId: string, input: NewDebt) {
+export async function createDebt(userId: string, input: NewDebt) {
   if (!input.person.trim()) throw new Error("Enter who the debt is with");
   if (!(input.amount > 0)) throw new Error("Enter an amount");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Invalid date");
-  return db
+  return await db
     .insert(schema.debts)
     .values({
       userId,
@@ -108,12 +123,12 @@ export function createDebt(userId: string, input: NewDebt) {
     .get();
 }
 
-export function updateDebt(userId: string, debtId: string, input: NewDebt) {
+export async function updateDebt(userId: string, debtId: string, input: NewDebt) {
   if (!input.person.trim()) throw new Error("Enter who the debt is with");
   if (!(input.amount > 0)) throw new Error("Enter an amount");
-  const existing = db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
+  const existing = await db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
   if (!existing) throw new Error("Debt not found");
-  db.update(schema.debts)
+  await db.update(schema.debts)
     .set({
       person: input.person.trim(),
       direction: input.direction,
@@ -127,35 +142,35 @@ export function updateDebt(userId: string, debtId: string, input: NewDebt) {
     })
     .where(eq(schema.debts.id, debtId))
     .run();
-  refreshStatus(debtId);
+  await refreshStatus(debtId);
 }
 
-export function deleteDebt(userId: string, debtId: string) {
-  const debt = db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
+export async function deleteDebt(userId: string, debtId: string) {
+  const debt = await db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
   if (!debt) return;
-  for (const p of db.select().from(schema.debtProofs).where(eq(schema.debtProofs.debtId, debtId)).all()) deleteUpload(p.file);
-  for (const p of db.select({ proofFile: schema.debtPayments.proofFile }).from(schema.debtPayments).where(eq(schema.debtPayments.debtId, debtId)).all()) deleteUpload(p.proofFile);
-  db.delete(schema.debts).where(eq(schema.debts.id, debtId)).run(); // cascades payments + proofs
+  for (const p of await db.select().from(schema.debtProofs).where(eq(schema.debtProofs.debtId, debtId)).all()) await deleteUpload(p.file);
+  for (const p of await db.select({ proofFile: schema.debtPayments.proofFile }).from(schema.debtPayments).where(eq(schema.debtPayments.debtId, debtId)).all()) await deleteUpload(p.proofFile);
+  await db.delete(schema.debts).where(eq(schema.debts.id, debtId)).run(); // cascades payments + proofs
 }
 
-export function addDebtProof(userId: string, debtId: string, file: string, contentType: string) {
-  const debt = db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
+export async function addDebtProof(userId: string, debtId: string, file: string, contentType: string) {
+  const debt = await db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
   if (!debt) throw new Error("Debt not found");
-  db.insert(schema.debtProofs).values({ debtId, file, contentType }).run();
+  await db.insert(schema.debtProofs).values({ debtId, file, contentType }).run();
 }
 
 export type NewPayment = { amount: number; date: string; paymentMethod: PaymentMethod; paymentMethodOther?: string | null; note?: string | null; proofFile?: string | null };
 
-export function addPayment(userId: string, debtId: string, input: NewPayment) {
-  const debt = db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
+export async function addPayment(userId: string, debtId: string, input: NewPayment) {
+  const debt = await db.select().from(schema.debts).where(and(eq(schema.debts.id, debtId), eq(schema.debts.userId, userId))).get();
   if (!debt) throw new Error("Debt not found");
   if (!(input.amount > 0)) throw new Error("Enter a payment amount");
-  const remaining = Math.max(0, debt.amount - paidAmount(debtId));
+  const remaining = Math.max(0, debt.amount - await paidAmount(debtId));
   if (input.amount > remaining + 100) {
     // Allow tiny rounding overage (1 minor unit slack isn't worth blocking); anything bigger is likely a typo.
     throw new Error(`That's more than the ${formatMoney(remaining, "PHP")} remaining`);
   }
-  const payment = db
+  const payment = await db
     .insert(schema.debtPayments)
     .values({
       debtId,
@@ -168,40 +183,40 @@ export function addPayment(userId: string, debtId: string, input: NewPayment) {
     })
     .returning()
     .get();
-  refreshStatus(debtId);
+  await refreshStatus(debtId);
   return payment;
 }
 
-export function deletePayment(userId: string, paymentId: string) {
-  const row = db
+export async function deletePayment(userId: string, paymentId: string) {
+  const row = await db
     .select({ payment: schema.debtPayments, debtUserId: schema.debts.userId, debtId: schema.debts.id })
     .from(schema.debtPayments)
     .innerJoin(schema.debts, eq(schema.debts.id, schema.debtPayments.debtId))
     .where(eq(schema.debtPayments.id, paymentId))
     .get();
   if (!row || row.debtUserId !== userId) return;
-  deleteUpload(row.payment.proofFile);
-  db.delete(schema.debtPayments).where(eq(schema.debtPayments.id, paymentId)).run();
-  refreshStatus(row.debtId);
+  await deleteUpload(row.payment.proofFile);
+  await db.delete(schema.debtPayments).where(eq(schema.debtPayments.id, paymentId)).run();
+  await refreshStatus(row.debtId);
 }
 
 /** Reminders a few days before a debt's due date. Call alongside generateNotifications. */
-export function generateDebtReminders(userId: string, home: string) {
+export async function generateDebtReminders(userId: string, home: string) {
   const today = format(new Date(), "yyyy-MM-dd");
-  const rows = db
+  const rows = (await db
     .select()
     .from(schema.debts)
     .where(and(eq(schema.debts.userId, userId)))
-    .all()
+    .all())
     .filter((d) => d.dueDate && d.status !== "paid");
   for (const d of rows) {
     const daysLeft = differenceInCalendarDays(parseISO(d.dueDate!), parseISO(today));
     const remindDaysBefore = 3;
     if (daysLeft > remindDaysBefore) continue;
-    const remaining = Math.max(0, d.amount - paidAmount(d.id));
+    const remaining = Math.max(0, d.amount - await paidAmount(d.id));
     const verb = d.direction === "owe" ? "you owe" : "owes you";
     const when = daysLeft < 0 ? `was due ${-daysLeft} day(s) ago` : daysLeft === 0 ? "is due today" : `is due in ${daysLeft} day(s)`;
-    notify(userId, {
+    await notify(userId, {
       kind: "debt",
       title: `${d.person} ${when}`,
       body: `${formatMoney(remaining, home)} ${verb}`,

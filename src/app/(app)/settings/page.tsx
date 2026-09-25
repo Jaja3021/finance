@@ -4,7 +4,7 @@ import { format } from "date-fns";
 import { ArrowRightIcon, DeviceMobileIcon } from "@phosphor-icons/react/ssr";
 import { db, schema } from "@/db";
 import { requireUser } from "@/lib/auth";
-import { BACKUP_DIR, listSnapshots } from "@/lib/backup";
+import { BACKUP_DIR, listSnapshots, SERVER_SNAPSHOTS } from "@/lib/backup";
 import { aiEnabled } from "@/lib/ai";
 import { PageHeader } from "@/components/ui";
 import { BackupForms, PinForms, ProfileForm } from "@/components/simple-forms";
@@ -14,7 +14,7 @@ import { lockNow, logout } from "@/app/actions/auth";
 
 export default async function SettingsPage() {
   const user = await requireUser();
-  const passkeys = db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).all();
+  const passkeys = await db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).all();
   const snapshots = listSnapshots().slice(0, 5);
 
   return (
@@ -65,11 +65,17 @@ export default async function SettingsPage() {
 
       <section className="card">
         <h2 className="card-title mb-1">Backups</h2>
-        <p className="mb-3 text-sm text-muted">
-          The whole database is copied automatically once a day, and the last 14 copies are kept in <code className="rounded bg-surface-2 px-1">{BACKUP_DIR}</code>.
-          Set <code className="rounded bg-surface-2 px-1">BACKUP_DIR</code> to a synced folder (OneDrive, Google Drive, Dropbox) for an off-device copy.
-        </p>
-        <BackupForms />
+        {SERVER_SNAPSHOTS ? (
+          <p className="mb-3 text-sm text-muted">
+            The whole database is copied automatically once a day, and the last 14 copies are kept in <code className="rounded bg-surface-2 px-1">{BACKUP_DIR}</code>.
+            Set <code className="rounded bg-surface-2 px-1">BACKUP_DIR</code> to a synced folder (OneDrive, Google Drive, Dropbox) for an off-device copy.
+          </p>
+        ) : (
+          <p className="mb-3 text-sm text-muted">
+            Your data is stored in a Turso database, which keeps its own point-in-time backups. Download your data any time for a copy you keep.
+          </p>
+        )}
+        <BackupForms serverSnapshots={SERVER_SNAPSHOTS} />
         {snapshots.length > 0 && (
           <div className="mt-4 border-t border-line pt-4 text-sm">
             <div className="mb-1 text-xs text-muted">Recent server snapshots</div>

@@ -7,13 +7,13 @@ import { AssistantChat } from "@/components/assistant-chat";
 
 export default async function AssistantPage() {
   const user = await requireUser();
-  const history = db
+  const history = (await db
     .select()
     .from(schema.chatMessages)
     .where(eq(schema.chatMessages.userId, user.id))
     .orderBy(desc(schema.chatMessages.createdAt))
     .limit(30)
-    .all()
+    .all())
     .reverse()
     .map((m) => ({ id: m.id, role: m.role, content: m.content }));
   return (

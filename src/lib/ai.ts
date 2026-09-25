@@ -3,7 +3,7 @@ import { GoogleGenAI, ApiError, ThinkingLevel } from "@google/genai";
 import { z } from "zod";
 import { and, desc, eq } from "drizzle-orm";
 import { format, startOfMonth, subMonths, endOfMonth, getDate, getDaysInMonth } from "date-fns";
-import { db, sqlite, schema } from "@/db";
+import { db, query, schema } from "@/db";
 import { accessibleAccounts } from "./access";
 import { parseRuleBased, matchAccount, type Draft } from "./nlp";
 import { budgetStatus, spendingByCategory } from "./engagement";
@@ -109,10 +109,10 @@ Rules:
 - Messages may mix English and Filipino/Taglish.`;
 
 export async function parseMessage(ctx: ParseContext, text: string): Promise<{ drafts: Draft[]; reply: string; engine: "ai" | "rules" }> {
-  const accounts = accessibleAccounts(ctx.userId);
+  const accounts = await accessibleAccounts(ctx.userId);
   if (!aiEnabled()) return { ...parseRuleBased(text, accounts), engine: "rules" };
 
-  const categories = db.select().from(schema.categories).where(eq(schema.categories.userId, ctx.userId)).all();
+  const categories = await db.select().from(schema.categories).where(eq(schema.categories.userId, ctx.userId)).all();
   const context = [
     `Today: ${format(new Date(), "yyyy-MM-dd (EEEE)")}`,
     `Home currency: ${ctx.homeCurrency}`,
@@ -137,11 +137,12 @@ export async function parseMessage(ctx: ParseContext, text: string): Promise<{ d
 }
 
 /** The account the user logs to most for a given type, as a default. */
-export function usualAccount(userId: string, type: Draft["type"]) {
-  const accts = accessibleAccounts(userId);
-  const counts = sqlite
-    .prepare(`SELECT account_id, COUNT(*) n FROM transactions WHERE user_id = ? AND type = ? GROUP BY account_id ORDER BY n DESC`)
-    .all(userId, type) as { account_id: string; n: number }[];
+export async function usualAccount(userId: string, type: Draft["type"]) {
+  const accts = await accessibleAccounts(userId);
+  const counts = await query<{ account_id: string; n: number }>(
+    `SELECT account_id, COUNT(*) n FROM transactions WHERE user_id = ? AND type = ? GROUP BY account_id ORDER BY n DESC`,
+    [userId, type],
+  );
   for (const c of counts) {
     const a = accts.find((x) => x.id === c.account_id);
     if (a && (type !== "transfer" || (a.type !== "credit_card" && a.type !== "loan"))) return a;
@@ -149,15 +150,15 @@ export function usualAccount(userId: string, type: Draft["type"]) {
   return accts.find((a) => a.type === "ewallet" || a.type === "cash" || a.type === "bank") ?? accts[0] ?? null;
 }
 
-export function resolveAccount(userId: string, name: string | null, fallbackType: Draft["type"], exclude?: string) {
-  const accts = accessibleAccounts(userId);
+export async function resolveAccount(userId: string, name: string | null, fallbackType: Draft["type"], exclude?: string) {
+  const accts = await accessibleAccounts(userId);
   if (name) {
     const exact = accts.find((a) => a.name.toLowerCase() === name.toLowerCase() && a.id !== exclude);
     if (exact) return exact;
     const fuzzy = matchAccount(name, accts, exclude);
     if (fuzzy) return fuzzy;
   }
-  const usual = usualAccount(userId, fallbackType);
+  const usual = await usualAccount(userId, fallbackType);
   return usual && usual.id !== exclude ? usual : accts.find((a) => a.id !== exclude) ?? null;
 }
 
@@ -189,7 +190,7 @@ type CategoryTrend = {
 /** Numbers the coach reasons over. Also drives the rule-based tips. */
 export async function coachFeatures(userId: string, home: string) {
   const now = new Date();
-  const cats = db.select().from(schema.categories).where(eq(schema.categories.userId, userId)).all();
+  const cats = await db.select().from(schema.categories).where(eq(schema.categories.userId, userId)).all();
   const catName = new Map(cats.map((c) => [c.id, c.name]));
   const monthly: Map<string | null, number>[] = [];
   for (let i = 5; i >= 0; i--) {
@@ -216,22 +217,20 @@ export async function coachFeatures(userId: string, home: string) {
     };
   });
 
-  const firstTx = sqlite.prepare(`SELECT MIN(created_at) m, COUNT(*) n FROM transactions WHERE user_id = ?`).get(userId) as { m: number | null; n: number };
+  const [firstTx] = await query<{ m: number | null; n: number }>(`SELECT MIN(created_at) m, COUNT(*) n FROM transactions WHERE user_id = ?`, [userId]);
   const daysOfData = firstTx.m ? Math.ceil((Date.now() - firstTx.m) / 86_400_000) : 0;
-  const incomeTx = sqlite
-    .prepare(
-      `SELECT substr(t.date,1,7) ym, t.date, t.amount, a.currency FROM transactions t JOIN accounts a ON a.id = t.account_id
+  const incomeTx = await query<{ ym: string; date: string; amount: number; currency: string }>(
+    `SELECT substr(t.date,1,7) ym, t.date, t.amount, a.currency FROM transactions t JOIN accounts a ON a.id = t.account_id
        WHERE t.user_id = ? AND t.type='income' AND t.date >= ?`,
-    )
-    .all(userId, format(startOfMonth(subMonths(now, 3)), "yyyy-MM-dd")) as { ym: string; date: string; amount: number; currency: string }[];
+    [userId, format(startOfMonth(subMonths(now, 3)), "yyyy-MM-dd")],
+  );
   await ensureRates(incomeTx.map((r) => r.currency), home);
   const incomeByMonth: Record<string, number> = {};
   for (const r of incomeTx) incomeByMonth[r.ym] = (incomeByMonth[r.ym] ?? 0) + (convertMinor(r.amount, r.currency, home, r.date) ?? 0);
-  const topPayees = sqlite
-    .prepare(
-      `SELECT lower(payee) p, COUNT(*) n FROM transactions WHERE user_id = ? AND type='expense' AND payee IS NOT NULL AND date >= ? GROUP BY p ORDER BY n DESC LIMIT 8`,
-    )
-    .all(userId, format(subMonths(now, 1), "yyyy-MM-dd")) as { p: string; n: number }[];
+  const topPayees = await query<{ p: string; n: number }>(
+    `SELECT lower(payee) p, COUNT(*) n FROM transactions WHERE user_id = ? AND type='expense' AND payee IS NOT NULL AND date >= ? GROUP BY p ORDER BY n DESC LIMIT 8`,
+    [userId, format(subMonths(now, 1), "yyyy-MM-dd")],
+  );
 
   return {
     home,
@@ -315,7 +314,7 @@ export async function generateCoachTips(userId: string, home: string): Promise<{
   const rules = ruleTips(f);
   if (!aiEnabled() || f.transactionCount < 3) return { tips: rules, source: "rules" };
 
-  const history = db
+  const history = await db
     .select()
     .from(schema.coachTips)
     .where(eq(schema.coachTips.userId, userId))
@@ -369,7 +368,7 @@ export async function generateCoachTips(userId: string, home: string): Promise<{
 
 /** Latest saved tips, regenerating at most once a day unless forced. */
 export async function currentTips(userId: string, home: string, force = false) {
-  const latest = db
+  const latest = await db
     .select()
     .from(schema.coachTips)
     .where(eq(schema.coachTips.userId, userId))
@@ -378,7 +377,7 @@ export async function currentTips(userId: string, home: string, force = false) {
     .get();
   const fresh = latest && Date.now() - latest.createdAt < 24 * 60 * 60 * 1000;
   if (!force && fresh) {
-    return db
+    return await db
       .select()
       .from(schema.coachTips)
       .where(and(eq(schema.coachTips.userId, userId), eq(schema.coachTips.createdAt, latest.createdAt)))
@@ -387,7 +386,7 @@ export async function currentTips(userId: string, home: string, force = false) {
   const { tips, source } = await generateCoachTips(userId, home);
   const at = Date.now();
   if (!tips.length) return [];
-  return db
+  return await db
     .insert(schema.coachTips)
     .values(tips.map((t) => ({ userId, ...t, source, createdAt: at })))
     .returning()

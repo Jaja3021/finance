@@ -1,10 +1,13 @@
 import "server-only";
 import path from "node:path";
 import fs from "node:fs";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
+
+// Turso when TURSO_DATABASE_URL is set (Vercel), otherwise a local SQLite file.
+// libSQL enforces foreign keys by default, which the ON DELETE CASCADEs rely on.
+export const REMOTE_DB = !!process.env.TURSO_DATABASE_URL;
 
 export const DB_PATH = path.resolve(
   /*turbopackIgnore: true*/
@@ -12,20 +15,21 @@ export const DB_PATH = path.resolve(
 );
 
 function open() {
+  if (REMOTE_DB) {
+    return createClient({ url: process.env.TURSO_DATABASE_URL!, authToken: process.env.TURSO_AUTH_TOKEN });
+  }
   fs.mkdirSync(/*turbopackIgnore: true*/ path.dirname(DB_PATH), { recursive: true });
-  const sqlite = new Database(DB_PATH);
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("foreign_keys = ON");
-  const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: path.resolve(/*turbopackIgnore: true*/ process.cwd(), "drizzle") });
-  return { sqlite, db };
+  return createClient({ url: `file:${path.relative(process.cwd(), DB_PATH).replace(/\\/g, "/")}` });
 }
 
-// Reuse one connection across hot reloads in dev.
-const g = globalThis as unknown as { __financeDb?: ReturnType<typeof open> };
-const conn = (g.__financeDb ??= open());
-
-export const db = conn.db;
-export const sqlite = conn.sqlite;
+// Reuse one client across hot reloads in dev.
+const g = globalThis as unknown as { __financeClient?: ReturnType<typeof open> };
+export const client = (g.__financeClient ??= open());
+export const db = drizzle(client, { schema });
 export type DB = typeof db;
 export { schema };
+
+/** Raw SQL for the few queries that read better as SQL than as Drizzle. */
+export async function query<T>(sql: string, args: (string | number | null)[] = []): Promise<T[]> {
+  return (await client.execute({ sql, args })).rows as unknown as T[];
+}

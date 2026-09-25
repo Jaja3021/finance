@@ -19,7 +19,7 @@ function methodLabel(method: string, other: string | null) {
 export default async function DebtDetailPage(props: PageProps<"/debts/[id]">) {
   const user = await requireUser();
   const { id } = await props.params;
-  const debt = getDebt(user.id, id);
+  const debt = await getDebt(user.id, id);
   if (!debt) notFound();
   const home = user.homeCurrency;
 

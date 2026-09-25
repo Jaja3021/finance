@@ -56,11 +56,11 @@ export async function addDebt(_: FormState, f: FormData): Promise<FormState> {
     return { error: (err as Error).message };
   }
   try {
-    const debt = createDebt(user.id, input);
+    const debt = await createDebt(user.id, input);
     const proofFile = f.get("proof");
     if (proofFile instanceof File && proofFile.size > 0) {
       const saved = await saveUpload(proofFile);
-      if (saved) addDebtProof(user.id, debt.id, saved.file, saved.contentType);
+      if (saved) await addDebtProof(user.id, debt.id, saved.file, saved.contentType);
       else return { error: "Debt saved, but that file isn't a supported image (JPG, PNG, WEBP, HEIC)." };
     }
   } catch (err) {
@@ -80,7 +80,7 @@ export async function editDebt(_: FormState, f: FormData): Promise<FormState> {
     return { error: (err as Error).message };
   }
   try {
-    updateDebt(user.id, id, input);
+    await updateDebt(user.id, id, input);
   } catch (err) {
     return { error: (err as Error).message };
   }
@@ -90,14 +90,14 @@ export async function editDebt(_: FormState, f: FormData): Promise<FormState> {
 
 export async function removeDebt(f: FormData) {
   const user = await requireUser();
-  deleteDebt(user.id, str(f, "id"));
+  await deleteDebt(user.id, str(f, "id"));
   refresh();
 }
 
 /** Same as removeDebt, but for the detail page: sends the user back to the list. */
 export async function removeDebtAndRedirect(f: FormData) {
   const user = await requireUser();
-  deleteDebt(user.id, str(f, "id"));
+  await deleteDebt(user.id, str(f, "id"));
   refresh();
   redirect("/debts");
 }
@@ -120,7 +120,7 @@ export async function addDebtPayment(_: FormState, f: FormData): Promise<FormSta
       const saved = await saveUpload(proofFile);
       if (saved) input.proofFile = saved.file;
     }
-    addPayment(user.id, debtId, input);
+    await addPayment(user.id, debtId, input);
   } catch (err) {
     return { error: (err as Error).message };
   }
@@ -130,6 +130,6 @@ export async function addDebtPayment(_: FormState, f: FormData): Promise<FormSta
 
 export async function removeDebtPayment(f: FormData) {
   const user = await requireUser();
-  deletePayment(user.id, str(f, "id"));
+  await deletePayment(user.id, str(f, "id"));
   refresh();
 }

@@ -247,7 +247,7 @@ export function PinForms({ hasPin, minutes }: { hasPin: boolean; minutes: number
   );
 }
 
-export function BackupForms() {
+export function BackupForms({ serverSnapshots }: { serverSnapshots: boolean }) {
   const [rState, restore, rPending] = useActionState(restoreBackup, undefined);
   const [sState, snap, sPending] = useActionState(snapshotNow, undefined);
   return (
@@ -256,16 +256,18 @@ export function BackupForms() {
         <a className="btn-primary" href="/api/export/backup" download>
           Download my data (JSON)
         </a>
-        <form action={snap}>
-          <button className="btn-ghost" disabled={sPending}>{sPending ? "Backing up…" : "Back up server now"}</button>
-        </form>
+        {serverSnapshots && (
+          <form action={snap}>
+            <button className="btn-ghost" disabled={sPending}>{sPending ? "Backing up…" : "Back up server now"}</button>
+          </form>
+        )}
       </div>
       <FormMessage state={sState} />
       <form
         action={restore}
         className="space-y-2 border-t border-line pt-4"
         onSubmit={(e) => {
-          if (!confirm("Replace your current data with this backup? A snapshot of the current data is saved first.")) e.preventDefault();
+          if (!confirm(`Replace your current data with this backup?${serverSnapshots ? " A snapshot of the current data is saved first." : ""}`)) e.preventDefault();
         }}
       >
         <label className="label" htmlFor="restore">Restore from a downloaded backup</label>

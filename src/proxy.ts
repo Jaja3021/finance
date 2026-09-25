@@ -17,7 +17,7 @@ const PUBLIC = ["/login", "/signup"];
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   // Phone shortcuts authenticate with an API key inside the route, not a cookie.
-  if (pathname.startsWith("/api/shortcut/") || pathname === "/session-expired") return NextResponse.next();
+  if (pathname.startsWith("/api/shortcut/") || pathname === "/api/cron" || pathname === "/session-expired") return NextResponse.next();
   const isPublic = PUBLIC.some((p) => pathname.startsWith(p));
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
 

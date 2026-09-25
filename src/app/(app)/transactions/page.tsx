@@ -11,11 +11,11 @@ export default async function TransactionsPage(props: PageProps<"/transactions">
   const user = await requireUser();
   const sp = await props.searchParams;
   const q = (k: string) => (typeof sp[k] === "string" ? (sp[k] as string) : undefined);
-  const accounts = accessibleAccounts(user.id);
-  const categories = db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).orderBy(schema.categories.name).all();
+  const accounts = await accessibleAccounts(user.id);
+  const categories = await db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).orderBy(schema.categories.name).all();
   const filter = { q: q("q"), accountId: q("account"), categoryId: q("category"), from: q("from"), to: q("to") };
   const limit = Math.min(2000, Math.max(100, Number(q("limit")) || 100));
-  const rows = listTransactions(user.id, { ...filter, limit: limit + 1 });
+  const rows = await listTransactions(user.id, { ...filter, limit: limit + 1 });
   const more = rows.length > limit;
   if (more) rows.pop();
   const moreHref = `/transactions?${new URLSearchParams({ ...Object.fromEntries(Object.entries(filter).filter(([, v]) => v) as [string, string][]), limit: String(limit + 100) })}`;

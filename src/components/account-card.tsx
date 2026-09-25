@@ -53,7 +53,7 @@ export function AccountCard({ account: a, debt, homeCurrency, sharedBy, editable
 
   return (
     <article
-      className="relative overflow-hidden rounded-2xl p-4 text-white shadow-md"
+      className="relative h-full overflow-hidden rounded-2xl p-4 text-white shadow-md"
       style={{ background: `linear-gradient(135deg, ${shade(base, 0.12)} 0%, ${base} 55%, ${shade(base, -0.28)} 100%)` }}
     >
       <span className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10" aria-hidden />

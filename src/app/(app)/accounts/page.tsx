@@ -61,9 +61,9 @@ export default async function AccountsPage(props: PageProps<"/accounts">) {
   const home = user.homeCurrency;
 
   const [accts, history] = await Promise.all([accountsWithBalances(user.id, home), netWorthHistory(user.id, home, 14)]);
-  const hhIds = householdIdsFor(user.id);
-  const households = (hhIds.length ? db.select().from(schema.households).where(inArray(schema.households.id, hhIds)).all() : []).map((h) => ({ id: h.id, name: h.name }));
-  const owners = new Map(db.select({ id: schema.users.id, name: schema.users.name }).from(schema.users).all().map((u) => [u.id, u.name]));
+  const hhIds = await householdIdsFor(user.id);
+  const households = (hhIds.length ? await db.select().from(schema.households).where(inArray(schema.households.id, hhIds)).all() : []).map((h) => ({ id: h.id, name: h.name }));
+  const owners = new Map((await db.select({ id: schema.users.id, name: schema.users.name }).from(schema.users).all()).map((u) => [u.id, u.name]));
 
   const assetAccts = accts.filter((a) => !DEBT_TYPES.has(a.type));
   const debtAccts = accts.filter((a) => DEBT_TYPES.has(a.type));

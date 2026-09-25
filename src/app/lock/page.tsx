@@ -9,7 +9,7 @@ export default async function LockPage() {
   const user = await getSessionUser();
   if (!user) redirect("/session-expired");
   if (!user.pinHash) redirect("/");
-  const hasBiometric = !!db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).get();
+  const hasBiometric = !!await db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).get();
   return (
     <AuthShell title={`Hi, ${user.name.split(" ")[0]}`} subtitle="The app is locked. Enter your PIN to continue.">
       <LockForm hasBiometric={hasBiometric} />

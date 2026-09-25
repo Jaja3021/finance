@@ -21,7 +21,7 @@ export type Statement = {
 
 /** Income/expense statement for any date range, converted to home currency. */
 export async function statement(userId: string, home: string, from: string, to: string): Promise<Statement> {
-  const txs = listTransactions(userId, { from, to, limit: 100_000 });
+  const txs = await listTransactions(userId, { from, to, limit: 100_000 });
   await ensureRates(txs.map((t) => t.account.currency), home);
   const inc = new Map<string, { icon: string | null; amount: number }>();
   const exp = new Map<string, { icon: string | null; amount: number }>();

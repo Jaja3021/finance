@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth";
 
 export async function GET() {
   const user = await requireUser();
-  const items = db
+  const items = await db
     .select()
     .from(schema.notifications)
     .where(eq(schema.notifications.userId, user.id))
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   const user = await requireUser();
   const { ids } = (await req.json().catch(() => ({}))) as { ids?: string[] };
   const n = schema.notifications;
-  db.update(n)
+  await db.update(n)
     .set({ readAt: Date.now() })
     .where(and(eq(n.userId, user.id), isNull(n.readAt), ids?.length ? inArray(n.id, ids) : undefined))
     .run();

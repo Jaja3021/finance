@@ -1,7 +1,7 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, inArray, or } from "drizzle-orm";
 import { format, subDays, eachDayOfInterval } from "date-fns";
-import { db, sqlite, schema } from "@/db";
+import { db, client, schema } from "@/db";
 import { accessibleAccounts } from "./access";
 import { convertMinor, ensureRates, rateOn, today } from "./fx";
 import { priceOn, priceSeries, refreshPrices } from "./market";
@@ -11,32 +11,30 @@ export type Account = typeof schema.accounts.$inferSelect;
 export const DEBT_TYPES = new Set(["credit_card", "loan"]);
 
 /** Current balance per account id, in each account's own currency (minor units). */
-export function accountBalances(accountIds: string[], asOf?: string): Map<string, number> {
+export async function accountBalances(accountIds: string[], asOf?: string): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (!accountIds.length) return out;
   const ph = accountIds.map(() => "?").join(",");
   const dateCond = asOf ? "AND date <= ?" : "";
   const dateArg = asOf ? [asOf] : [];
-  const rows = sqlite
-    .prepare(
-      `SELECT a.id, a.opening_balance +
+  const { rows } = await client.execute({
+    sql: `SELECT a.id, a.opening_balance +
          COALESCE((SELECT SUM(CASE type WHEN 'income' THEN amount ELSE -amount END)
                    FROM transactions WHERE account_id = a.id ${dateCond}), 0) +
          COALESCE((SELECT SUM(to_amount) FROM transactions
                    WHERE type = 'transfer' AND to_account_id = a.id ${dateCond}), 0) AS balance
        FROM accounts a WHERE a.id IN (${ph})`,
-    )
-    .all(...dateArg, ...dateArg, ...accountIds) as { id: string; balance: number }[];
-  for (const r of rows) out.set(r.id, r.balance);
+    args: [...dateArg, ...dateArg, ...accountIds],
+  });
+  for (const r of rows) out.set(String(r.id), Number(r.balance));
   return out;
 }
 
 export type AccountWithBalance = Account & { balance: number; balanceHome: number | null };
 
 export async function accountsWithBalances(userId: string, home: string) {
-  const accts = accessibleAccounts(userId);
-  await ensureRates(accts.map((a) => a.currency), home);
-  const bal = accountBalances(accts.map((a) => a.id));
+  const accts = await accessibleAccounts(userId);
+  const [bal] = await Promise.all([accountBalances(accts.map((a) => a.id)), ensureRates(accts.map((a) => a.currency), home)]);
   return accts.map<AccountWithBalance>((a) => {
     const balance = bal.get(a.id) ?? 0;
     return { ...a, balance, balanceHome: convertMinor(balance, a.currency, home) };
@@ -68,17 +66,19 @@ export type Portfolio = {
 };
 
 export async function portfolio(userId: string, home: string): Promise<Portfolio> {
-  const rows = db.select().from(schema.holdings).where(eq(schema.holdings.userId, userId)).all();
+  const rows = await db.select().from(schema.holdings).where(eq(schema.holdings.userId, userId)).all();
   await refreshPrices(rows.map((h) => ({ kind: h.kind, symbol: h.symbol })));
 
   const now = today();
   const then = format(subDays(new Date(), 30), "yyyy-MM-dd");
+  const seriesFrom = format(subDays(new Date(), 40), "yyyy-MM-dd");
+  const [quotes, quotes30, seriesByHolding] = await Promise.all([
+    Promise.all(rows.map((h) => priceOn(h.kind, h.symbol, now))),
+    Promise.all(rows.map((h) => priceOn(h.kind, h.symbol, then))),
+    Promise.all(rows.map((h) => priceSeries(h.kind, h.symbol, seriesFrom))),
+  ]);
   const currencies = new Set<string>();
-  const quotes = rows.map((h) => {
-    const p = priceOn(h.kind, h.symbol, now);
-    if (p) currencies.add(p.currency);
-    return p;
-  });
+  for (const q of [...quotes, ...seriesByHolding.flat()]) if (q) currencies.add(q.currency);
   await ensureRates([...currencies], home);
 
   const toHome = (major: number, ccy: string, date: string) => {
@@ -93,7 +93,7 @@ export async function portfolio(userId: string, home: string): Promise<Portfolio
       missing.push(h.name);
       return { ...h, currency: null, price: null, priceDate: null, valueHome: null, value30Home: null, priceEffectHome: null, fxEffectHome: null };
     }
-    const p30 = priceOn(h.kind, h.symbol, then) ?? q;
+    const p30 = quotes30[i] ?? q;
     const fxNow = rateOn(q.currency, home, now);
     const fx30 = rateOn(q.currency, home, then) ?? fxNow;
     const valueHome = toHome(h.quantity * q.close, q.currency, now);
@@ -114,7 +114,6 @@ export async function portfolio(userId: string, home: string): Promise<Portfolio
   const days = eachDayOfInterval({ start: subDays(new Date(), 30), end: new Date() }).map((d) =>
     format(d, "yyyy-MM-dd"),
   );
-  const seriesByHolding = rows.map((h) => priceSeries(h.kind, h.symbol, format(subDays(new Date(), 40), "yyyy-MM-dd")));
   const series = days.map((date) => {
     let value = 0;
     rows.forEach((h, i) => {
@@ -150,13 +149,28 @@ export async function portfolio(userId: string, home: string): Promise<Portfolio
 
 /** Total net worth (all accounts, converted to home currency) for each of the last `days` days. */
 export async function netWorthHistory(userId: string, home: string, days = 14): Promise<{ date: string; value: number }[]> {
-  const accts = accessibleAccounts(userId);
+  const accts = await accessibleAccounts(userId);
   if (!accts.length) return [];
   const ids = accts.map((a) => a.id);
-  await ensureRates([...new Set(accts.map((a) => a.currency))], home);
   const dates = eachDayOfInterval({ start: subDays(new Date(), days - 1), end: new Date() }).map((d) => format(d, "yyyy-MM-dd"));
+  // Today's balances, then walk back through the window's transactions: two queries, not one per day.
+  const t = schema.transactions;
+  const [current, recent] = await Promise.all([
+    accountBalances(ids),
+    db
+      .select({ accountId: t.accountId, toAccountId: t.toAccountId, type: t.type, amount: t.amount, toAmount: t.toAmount, date: t.date })
+      .from(t)
+      .where(and(gt(t.date, dates[0]), or(inArray(t.accountId, ids), inArray(t.toAccountId, ids))))
+      .all(),
+    ensureRates([...new Set(accts.map((a) => a.currency))], home),
+  ]);
   return dates.map((date) => {
-    const bal = accountBalances(ids, date);
+    const bal = new Map(current);
+    for (const r of recent) {
+      if (r.date <= date) continue;
+      bal.set(r.accountId, (bal.get(r.accountId) ?? 0) - (r.type === "income" ? r.amount : -r.amount));
+      if (r.type === "transfer" && r.toAccountId) bal.set(r.toAccountId, (bal.get(r.toAccountId) ?? 0) - (r.toAmount ?? 0));
+    }
     let value = 0;
     for (const a of accts) {
       const converted = convertMinor(bal.get(a.id) ?? 0, a.currency, home, date);

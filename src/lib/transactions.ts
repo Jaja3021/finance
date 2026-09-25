@@ -26,12 +26,12 @@ export type NewTransaction = {
 export async function createTransaction(userId: string, input: NewTransaction) {
   if (!Number.isInteger(input.amount) || input.amount <= 0) throw new Error("Amount must be positive");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Invalid date");
-  const acct = assertAccountAccess(userId, input.accountId);
+  const acct = await assertAccountAccess(userId, input.accountId);
 
   let toAmount: number | null = null;
   if (input.type === "transfer") {
     if (!input.toAccountId || input.toAccountId === input.accountId) throw new Error("Pick a different destination account");
-    const dest = assertAccountAccess(userId, input.toAccountId);
+    const dest = await assertAccountAccess(userId, input.toAccountId);
     toAmount = input.toAmount ?? null;
     if (toAmount === null) {
       await ensureRates([acct.currency], dest.currency);
@@ -43,7 +43,7 @@ export async function createTransaction(userId: string, input: NewTransaction) {
   let categoryId = input.type === "transfer" ? null : (input.categoryId ?? null);
   let categorySource = input.categorySource ?? "user";
   if (categoryId) {
-    const ok = db
+    const ok = await db
       .select()
       .from(schema.categories)
       .where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, userId)))
@@ -51,7 +51,7 @@ export async function createTransaction(userId: string, input: NewTransaction) {
     if (!ok) categoryId = null;
   }
   if (!categoryId && input.type !== "transfer") {
-    const s = suggestCategory(userId, input.payee || input.note || "", input.type);
+    const s = await suggestCategory(userId, input.payee || input.note || "", input.type);
     if (s) {
       categoryId = s.categoryId;
       categorySource = "auto";
@@ -63,8 +63,8 @@ export async function createTransaction(userId: string, input: NewTransaction) {
   if (splits.reduce((a, s) => a + s.amount, 0) > input.amount) throw new Error("Split shares exceed the total");
 
   let billId = input.billId ?? null;
-  const tx = db.transaction((trx) => {
-    const row = trx
+  const tx = await db.transaction(async (trx) => {
+    const row = await trx
       .insert(schema.transactions)
       .values({
         userId,
@@ -83,7 +83,7 @@ export async function createTransaction(userId: string, input: NewTransaction) {
       .returning()
       .get();
     if (splits.length) {
-      trx.insert(schema.splits)
+      await trx.insert(schema.splits)
         .values(splits.map((s) => ({ transactionId: row.id, person: s.person.trim(), amount: s.amount })))
         .run();
     }
@@ -91,11 +91,11 @@ export async function createTransaction(userId: string, input: NewTransaction) {
   });
 
   if (input.type === "expense" && !billId) {
-    billId = matchBillPayment(userId, { ...tx, currency: acct.currency });
-    if (billId) db.update(schema.transactions).set({ billId }).where(eq(schema.transactions.id, tx.id)).run();
+    billId = await matchBillPayment(userId, { ...tx, currency: acct.currency });
+    if (billId) await db.update(schema.transactions).set({ billId }).where(eq(schema.transactions.id, tx.id)).run();
   }
 
-  checkBadges(userId);
+  await checkBadges(userId);
   await generateNotifications(userId);
   return tx;
 }
@@ -109,8 +109,8 @@ export type TxFilter = {
   limit?: number;
 };
 
-export function listTransactions(userId: string, f: TxFilter = {}) {
-  const accts = accessibleAccounts(userId, true);
+export async function listTransactions(userId: string, f: TxFilter = {}) {
+  const accts = await accessibleAccounts(userId, true);
   if (!accts.length) return [];
   const ids = accts.map((a) => a.id);
   const t = schema.transactions;
@@ -120,7 +120,7 @@ export function listTransactions(userId: string, f: TxFilter = {}) {
   if (f.accountId) conds.push(or(eq(t.accountId, f.accountId), eq(t.toAccountId, f.accountId)));
   if (f.categoryId) conds.push(eq(t.categoryId, f.categoryId));
   if (f.q) conds.push(or(like(t.payee, `%${f.q}%`), like(t.note, `%${f.q}%`)));
-  const rows = db
+  const rows = await db
     .select({
       tx: t,
       category: schema.categories,
@@ -135,7 +135,7 @@ export function listTransactions(userId: string, f: TxFilter = {}) {
     .all();
   const txIds = rows.map((r) => r.tx.id);
   const splitRows = txIds.length
-    ? db.select().from(schema.splits).where(inArray(schema.splits.transactionId, txIds)).all()
+    ? await db.select().from(schema.splits).where(inArray(schema.splits.transactionId, txIds)).all()
     : [];
   const acctById = new Map(accts.map((a) => [a.id, a]));
   return rows.map((r) => ({
@@ -148,4 +148,4 @@ export function listTransactions(userId: string, f: TxFilter = {}) {
   }));
 }
 
-export type TxRow = ReturnType<typeof listTransactions>[number];
+export type TxRow = Awaited<ReturnType<typeof listTransactions>>[number];

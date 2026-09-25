@@ -4,22 +4,22 @@ import { db, schema } from "@/db";
 
 const { accounts, householdMembers } = schema;
 
-export function householdIdsFor(userId: string): string[] {
-  return db
+export async function householdIdsFor(userId: string): Promise<string[]> {
+  const rows = await db
     .select({ id: householdMembers.householdId })
     .from(householdMembers)
     .where(eq(householdMembers.userId, userId))
-    .all()
-    .map((r) => r.id);
+    .all();
+  return rows.map((r) => r.id);
 }
 
 /** Accounts the user owns plus accounts shared with any household they belong to. */
-export function accessibleAccounts(userId: string, includeArchived = false) {
-  const hh = householdIdsFor(userId);
+export async function accessibleAccounts(userId: string, includeArchived = false) {
+  const hh = await householdIdsFor(userId);
   const visible = hh.length
     ? or(eq(accounts.ownerId, userId), inArray(accounts.householdId, hh))
     : eq(accounts.ownerId, userId);
-  return db
+  return await db
     .select()
     .from(accounts)
     .where(includeArchived ? visible : and(visible, eq(accounts.archived, false)))
@@ -27,8 +27,8 @@ export function accessibleAccounts(userId: string, includeArchived = false) {
     .all();
 }
 
-export function assertAccountAccess(userId: string, accountId: string) {
-  const acct = accessibleAccounts(userId, true).find((a) => a.id === accountId);
+export async function assertAccountAccess(userId: string, accountId: string) {
+  const acct = (await accessibleAccounts(userId, true)).find((a) => a.id === accountId);
   if (!acct) throw new Error("Account not found");
   return acct;
 }

@@ -10,19 +10,20 @@ import { today } from "./fx";
 
 const TICK_MS = 30 * 60 * 1000;
 
-async function tick() {
+/** Daily backup (local database only) plus reminders for every user. Also called by /api/cron on Vercel. */
+export async function runScheduledJobs() {
   try {
     if (lastSnapshotDate() !== today()) {
       const file = await snapshotDatabase("daily");
-      console.log(`[backup] wrote ${file}`);
+      if (file) console.log(`[backup] wrote ${file}`);
     }
   } catch (err) {
     console.error("[backup] failed:", err);
   }
-  for (const u of db.select({ id: schema.users.id, homeCurrency: schema.users.homeCurrency }).from(schema.users).all()) {
+  for (const u of await db.select({ id: schema.users.id, homeCurrency: schema.users.homeCurrency }).from(schema.users).all()) {
     try {
       await generateNotifications(u.id);
-      generateDebtReminders(u.id, u.homeCurrency);
+      await generateDebtReminders(u.id, u.homeCurrency);
     } catch (err) {
       console.error(`[notify] ${u.id}:`, err);
     }
@@ -32,6 +33,6 @@ async function tick() {
 export function startScheduler() {
   const g = globalThis as unknown as { __financeScheduler?: NodeJS.Timeout };
   if (g.__financeScheduler) return;
-  g.__financeScheduler = setInterval(tick, TICK_MS);
-  setTimeout(tick, 5_000);
+  g.__financeScheduler = setInterval(runScheduledJobs, TICK_MS);
+  setTimeout(runScheduledJobs, 5_000);
 }

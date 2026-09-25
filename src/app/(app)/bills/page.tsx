@@ -13,10 +13,10 @@ import { BillForm } from "@/components/simple-forms";
 export default async function BillsPage(props: PageProps<"/bills">) {
   const user = await requireUser();
   const { edit } = await props.searchParams;
-  const bills = db.select().from(schema.bills).where(eq(schema.bills.userId, user.id)).orderBy(schema.bills.nextDue).all();
-  const accounts = accessibleAccounts(user.id);
-  const categories = db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).orderBy(schema.categories.name).all();
-  const suggestions = detectRecurring(user.id);
+  const bills = await db.select().from(schema.bills).where(eq(schema.bills.userId, user.id)).orderBy(schema.bills.nextDue).all();
+  const accounts = await accessibleAccounts(user.id);
+  const categories = await db.select().from(schema.categories).where(eq(schema.categories.userId, user.id)).orderBy(schema.categories.name).all();
+  const suggestions = await detectRecurring(user.id);
   const editing = bills.find((b) => b.id === edit);
   const today = new Date();
 

@@ -27,8 +27,8 @@ export const DEFAULT_CATEGORIES: { name: string; kind: "income" | "expense"; ico
   { name: "Other Income", kind: "income", icon: "💰" },
 ];
 
-export function seedCategories(userId: string) {
-  db.insert(schema.categories)
+export async function seedCategories(userId: string) {
+  await db.insert(schema.categories)
     .values(DEFAULT_CATEGORIES.map((c) => ({ ...c, userId })))
     .onConflictDoNothing()
     .run();
@@ -74,21 +74,21 @@ export type Suggestion = { categoryId: string; confidence: number; reason: strin
  * Suggests a category from the user's own history first (their corrections
  * count triple), then falls back to built-in keyword hints.
  */
-export function suggestCategory(
+export async function suggestCategory(
   userId: string,
   text: string,
   kind: "income" | "expense",
-): Suggestion {
+): Promise<Suggestion> {
   const key = normalizeKey(text);
   if (!key) return null;
-  const cats = db
+  const cats = await db
     .select()
     .from(schema.categories)
     .where(and(eq(schema.categories.userId, userId), eq(schema.categories.kind, kind)))
     .all();
   const catIds = new Set(cats.map((c) => c.id));
 
-  const history = db
+  const history = await db
     .select({
       payee: schema.transactions.payee,
       note: schema.transactions.note,

@@ -9,10 +9,10 @@ import { BADGE_ICONS } from "@/components/badge-icon";
 
 export default async function AchievementsPage() {
   const user = await requireUser();
-  checkBadges(user.id);
-  const s = streakFor(user.id);
+  await checkBadges(user.id);
+  const s = await streakFor(user.id);
   const earned = new Map(
-    db.select().from(schema.badges).where(eq(schema.badges.userId, user.id)).all().map((b) => [b.badge, b.earnedAt]),
+    (await db.select().from(schema.badges).where(eq(schema.badges.userId, user.id)).all()).map((b) => [b.badge, b.earnedAt]),
   );
 
   return (

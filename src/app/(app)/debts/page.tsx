@@ -19,9 +19,9 @@ export default async function DebtsPage(props: PageProps<"/debts">) {
   const tab = sp.tab === "owed" ? "owed" : "owe";
   const home = user.homeCurrency;
 
-  generateDebtReminders(user.id, home);
-  const totals = debtTotals(user.id);
-  const debts = listDebts(user.id, tab);
+  await generateDebtReminders(user.id, home);
+  const totals = await debtTotals(user.id);
+  const debts = await listDebts(user.id, tab);
 
   return (
     <div>

@@ -23,10 +23,10 @@ const SUBUNITS: Record<string, [string, number]> = {
   ILA: ["ILS", 100],
 };
 
-function store(key: string, currency: string, closes: Close[]) {
+async function store(key: string, currency: string, closes: Close[]) {
   if (!closes.length) return;
   const now = Date.now();
-  db.insert(schema.prices)
+  await db.insert(schema.prices)
     .values(closes.map((c) => ({ key, currency, date: c.date, close: c.close, fetchedAt: now })))
     .onConflictDoUpdate({
       target: [schema.prices.key, schema.prices.date],
@@ -57,7 +57,7 @@ async function fetchCrypto(id: string) {
     const s = (await spot.json()) as Record<string, { usd?: number }>;
     if (s[id]?.usd) closes.set(day(Date.now()), s[id].usd!);
   }
-  store(
+  await store(
     priceKey("crypto", id),
     "USD",
     [...closes].map(([date, close]) => ({ date, close })),
@@ -97,7 +97,7 @@ async function fetchYahoo(symbol: string) {
     if (existing) existing.close = r.meta.regularMarketPrice / div;
     else closes.push({ date: d, close: r.meta.regularMarketPrice / div });
   }
-  store(priceKey("stock", symbol), currency, closes);
+  await store(priceKey("stock", symbol), currency, closes);
 }
 
 async function fetchAlphaVantage(symbol: string) {
@@ -113,7 +113,7 @@ async function fetchAlphaVantage(symbol: string) {
   const series = json["Time Series (Daily)"];
   if (!series) throw new Error("Alpha Vantage returned no data");
   // Alpha Vantage doesn't report the quote currency; US listings are USD.
-  store(
+  await store(
     priceKey("stock", symbol),
     "USD",
     Object.entries(series)
@@ -127,9 +127,9 @@ const inflight = new Map<string, Promise<void>>();
 /** Refreshes prices that are older than 15 minutes. Failures keep cached data. */
 export async function refreshPrices(items: { kind: HoldingKind; symbol: string }[]) {
   await Promise.all(
-    items.map(({ kind, symbol }) => {
+    items.map(async ({ kind, symbol }) => {
       const key = priceKey(kind, symbol);
-      const latest = db
+      const latest = await db
         .select({ fetchedAt: schema.prices.fetchedAt })
         .from(schema.prices)
         .where(eq(schema.prices.key, key))
@@ -161,9 +161,9 @@ export async function refreshPrices(items: { kind: HoldingKind; symbol: string }
   );
 }
 
-export function priceOn(kind: HoldingKind, symbol: string, date: string) {
+export async function priceOn(kind: HoldingKind, symbol: string, date: string) {
   return (
-    db
+    await db
       .select({ close: schema.prices.close, currency: schema.prices.currency, date: schema.prices.date })
       .from(schema.prices)
       .where(and(eq(schema.prices.key, priceKey(kind, symbol)), lte(schema.prices.date, date)))
@@ -173,8 +173,8 @@ export function priceOn(kind: HoldingKind, symbol: string, date: string) {
   );
 }
 
-export function priceSeries(kind: HoldingKind, symbol: string, from: string) {
-  return db
+export async function priceSeries(kind: HoldingKind, symbol: string, from: string) {
+  return await db
     .select({ date: schema.prices.date, close: schema.prices.close, currency: schema.prices.currency })
     .from(schema.prices)
     .where(and(eq(schema.prices.key, priceKey(kind, symbol)), gte(schema.prices.date, from)))

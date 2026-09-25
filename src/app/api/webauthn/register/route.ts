@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   const user = await requireUser();
   if (!user.pinHash) return NextResponse.json({ error: "Set a PIN first" }, { status: 400 });
   const { rpID, rpName } = rp(req);
-  const existing = db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).all();
+  const existing = await db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).all();
   const options = await generateRegistrationOptions({
     rpName,
     rpID,
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     });
     if (!v.verified) return NextResponse.json({ error: "Could not verify" }, { status: 400 });
     const c = v.registrationInfo.credential;
-    db.insert(schema.passkeys)
+    await db.insert(schema.passkeys)
       .values({
         id: c.id,
         userId: user.id,

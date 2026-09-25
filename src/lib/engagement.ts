@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { addDays, format, startOfMonth, endOfMonth, subDays } from "date-fns";
-import { db, sqlite, schema } from "@/db";
+import { db, client, schema } from "@/db";
 import { accessibleAccounts } from "./access";
 import { convertMinor, ensureRates, today } from "./fx";
 import { dueSoon } from "./recurring";
@@ -28,11 +28,12 @@ const localDay = (ms: number) => format(new Date(ms), "yyyy-MM-dd");
  * (by when it was logged, not the transaction date). Missing a whole day
  * resets the streak; today still counts as "in progress" until midnight.
  */
-export function streakFor(userId: string) {
-  const rows = sqlite
-    .prepare(`SELECT DISTINCT created_at FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 5000`)
-    .all(userId) as { created_at: number }[];
-  const days = new Set(rows.map((r) => localDay(r.created_at)));
+export async function streakFor(userId: string) {
+  const { rows } = await client.execute({
+    sql: `SELECT DISTINCT created_at FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 5000`,
+    args: [userId],
+  });
+  const days = new Set(rows.map((r) => localDay(Number(r.created_at))));
   const t = today();
   const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
   const loggedToday = days.has(t);
@@ -62,11 +63,11 @@ export function streakFor(userId: string) {
   return { current, longest, loggedToday, recent };
 }
 
-function award(userId: string, badge: string): boolean {
-  const res = db.insert(schema.badges).values({ userId, badge }).onConflictDoNothing().run();
-  if (res.changes > 0) {
+async function award(userId: string, badge: string): Promise<boolean> {
+  const res = await db.insert(schema.badges).values({ userId, badge }).onConflictDoNothing().run();
+  if (res.rowsAffected > 0) {
     const b = BADGES[badge];
-    notify(userId, {
+    await notify(userId, {
       kind: "badge",
       title: `Badge earned: ${b.label}`,
       body: b.description,
@@ -79,10 +80,13 @@ function award(userId: string, badge: string): boolean {
 }
 
 /** Checks every badge rule. Cheap enough to run after each write. */
-export function checkBadges(userId: string): string[] {
+export async function checkBadges(userId: string): Promise<string[]> {
   const earned: string[] = [];
-  const { current } = streakFor(userId);
-  const txCount = (sqlite.prepare(`SELECT COUNT(*) n FROM transactions WHERE user_id = ?`).get(userId) as { n: number }).n;
+  const [{ current }, count] = await Promise.all([
+    streakFor(userId),
+    client.execute({ sql: `SELECT COUNT(*) n FROM transactions WHERE user_id = ?`, args: [userId] }),
+  ]);
+  const txCount = Number(count.rows[0].n);
   const rules: [string, boolean][] = [
     ["first_log", txCount >= 1],
     ["streak_3", current >= 3],
@@ -90,10 +94,10 @@ export function checkBadges(userId: string): string[] {
     ["streak_30", current >= 30],
     ["streak_100", current >= 100],
     ["tx_100", txCount >= 100],
-    ["first_budget", !!db.select().from(schema.budgets).where(eq(schema.budgets.userId, userId)).get()],
-    ["first_investment", !!db.select().from(schema.holdings).where(eq(schema.holdings.userId, userId)).get()],
+    ["first_budget", !!await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userId)).get()],
+    ["first_investment", !!await db.select().from(schema.holdings).where(eq(schema.holdings.userId, userId)).get()],
   ];
-  for (const [b, ok] of rules) if (ok && award(userId, b)) earned.push(b);
+  for (const [b, ok] of rules) if (ok && (await award(userId, b))) earned.push(b);
   return earned;
 }
 
@@ -115,23 +119,23 @@ export type BudgetStatus = {
  * Split expenses only count the user's own share.
  */
 export async function spendingByCategory(userId: string, home: string, from: string, to: string) {
-  const accts = accessibleAccounts(userId, true);
+  const accts = await accessibleAccounts(userId, true);
   if (!accts.length) return new Map<string | null, number>();
   await ensureRates(accts.map((a) => a.currency), home);
   const cur = new Map(accts.map((a) => [a.id, a.currency]));
   const ph = accts.map(() => "?").join(",");
-  const rows = sqlite
-    .prepare(
-      `SELECT t.account_id, t.category_id, t.date,
+  const { rows } = await client.execute({
+    sql: `SELECT t.account_id, t.category_id, t.date,
               t.amount - COALESCE((SELECT SUM(s.amount) FROM splits s WHERE s.transaction_id = t.id), 0) AS own
        FROM transactions t
        WHERE t.type = 'expense' AND t.date BETWEEN ? AND ? AND t.account_id IN (${ph})`,
-    )
-    .all(from, to, ...accts.map((a) => a.id)) as { account_id: string; category_id: string | null; date: string; own: number }[];
+    args: [from, to, ...accts.map((a) => a.id)],
+  });
   const out = new Map<string | null, number>();
   for (const r of rows) {
-    const v = convertMinor(Math.max(r.own, 0), cur.get(r.account_id)!, home, r.date) ?? 0;
-    out.set(r.category_id, (out.get(r.category_id) ?? 0) + v);
+    const categoryId = r.category_id === null ? null : String(r.category_id);
+    const v = convertMinor(Math.max(Number(r.own), 0), cur.get(String(r.account_id))!, home, String(r.date)) ?? 0;
+    out.set(categoryId, (out.get(categoryId) ?? 0) + v);
   }
   return out;
 }
@@ -140,7 +144,7 @@ export async function budgetStatus(userId: string, home: string, month = new Dat
   const from = format(startOfMonth(month), "yyyy-MM-dd");
   const to = format(endOfMonth(month), "yyyy-MM-dd");
   const spent = await spendingByCategory(userId, home, from, to);
-  return db
+  const rows = await db
     .select({
       id: schema.budgets.id,
       categoryId: schema.budgets.categoryId,
@@ -152,7 +156,8 @@ export async function budgetStatus(userId: string, home: string, month = new Dat
     .from(schema.budgets)
     .innerJoin(schema.categories, eq(schema.categories.id, schema.budgets.categoryId))
     .where(eq(schema.budgets.userId, userId))
-    .all()
+    .all();
+  return rows
     .map((b) => {
       const s = spent.get(b.categoryId) ?? 0;
       return { ...b, spent: s, ratio: b.limit > 0 ? s / b.limit : 0 };
@@ -162,24 +167,24 @@ export async function budgetStatus(userId: string, home: string, month = new Dat
 
 // ------------------------------------------------------------ notifications
 
-export function notify(
+export async function notify(
   userId: string,
   n: { kind: string; title: string; body: string; href?: string; dedupeKey: string },
 ) {
-  db.insert(schema.notifications).values({ userId, ...n }).onConflictDoNothing().run();
+  await db.insert(schema.notifications).values({ userId, ...n }).onConflictDoNothing().run();
 }
 
 /** Creates bill reminders and budget alerts that are due. Safe to call often. */
 export async function generateNotifications(userId: string) {
-  const user = db.select().from(schema.users).where(eq(schema.users.id, userId)).get();
+  const user = await db.select().from(schema.users).where(eq(schema.users.id, userId)).get();
   if (!user) return;
   const t = today();
 
-  for (const bill of dueSoon(userId, 31)) {
+  for (const bill of await dueSoon(userId, 31)) {
     const daysLeft = Math.round((new Date(bill.nextDue).getTime() - new Date(t).getTime()) / 86_400_000);
     if (daysLeft > bill.remindDaysBefore) continue;
     const when = daysLeft < 0 ? `was due ${-daysLeft} day(s) ago` : daysLeft === 0 ? "is due today" : `is due in ${daysLeft} day(s)`;
-    notify(userId, {
+    await notify(userId, {
       kind: "bill",
       title: `${bill.name} ${when}`,
       body: `${formatMoney(bill.amount, bill.currency)} on ${format(new Date(bill.nextDue + "T00:00:00"), "MMM d")}`,
@@ -191,7 +196,7 @@ export async function generateNotifications(userId: string) {
   const month = format(new Date(), "yyyy-MM");
   for (const b of await budgetStatus(userId, user.homeCurrency)) {
     if (b.ratio >= 1) {
-      notify(userId, {
+      await notify(userId, {
         kind: "budget",
         title: `Over budget: ${b.categoryName}`,
         body: `${formatMoney(b.spent, user.homeCurrency)} spent of ${formatMoney(b.limit, user.homeCurrency)} this month.`,
@@ -199,7 +204,7 @@ export async function generateNotifications(userId: string) {
         dedupeKey: `budget:${b.id}:${month}:over`,
       });
     } else if (b.ratio >= b.alertAt) {
-      notify(userId, {
+      await notify(userId, {
         kind: "budget",
         title: `${b.categoryName} is at ${Math.round(b.ratio * 100)}% of budget`,
         body: `${formatMoney(b.limit - b.spent, user.homeCurrency)} left for the rest of the month.`,
@@ -210,9 +215,9 @@ export async function generateNotifications(userId: string) {
   }
 
   // Nudge in the evening if today's log is missing but a streak is alive.
-  const s = streakFor(userId);
+  const s = await streakFor(userId);
   if (!s.loggedToday && s.current >= 2 && new Date().getHours() >= 19) {
-    notify(userId, {
+    await notify(userId, {
       kind: "streak",
       title: `Keep your ${s.current}-day streak alive`,
       body: "Log at least one transaction before midnight.",
@@ -222,8 +227,8 @@ export async function generateNotifications(userId: string) {
   }
 }
 
-export function unreadNotifications(userId: string) {
-  return db
+export async function unreadNotifications(userId: string) {
+  return await db
     .select()
     .from(schema.notifications)
     .where(and(eq(schema.notifications.userId, userId), sql`${schema.notifications.readAt} IS NULL`))

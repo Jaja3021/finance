@@ -13,8 +13,8 @@ export default async function QuickPage(props: PageProps<"/quick">) {
   return (
     <QuickFlow
       kind={type === "income" ? "income" : "expense"}
-      expense={quickOptions(user.id, "expense")}
-      income={quickOptions(user.id, "income")}
+      expense={await quickOptions(user.id, "expense")}
+      income={await quickOptions(user.id, "income")}
       currency={user.homeCurrency}
     />
   );

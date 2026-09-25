@@ -11,7 +11,7 @@ import { b64, CHALLENGE_COOKIE, challengeCookie, rp } from "@/lib/webauthn";
 export async function GET(req: NextRequest) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const keys = db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).all();
+  const keys = await db.select().from(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).all();
   if (!keys.length) return NextResponse.json({ error: "No biometrics registered" }, { status: 404 });
   const options = await generateAuthenticationOptions({
     rpID: rp(req).rpID,
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   const expectedChallenge = req.cookies.get(CHALLENGE_COOKIE)?.value;
   if (!expectedChallenge) return NextResponse.json({ error: "Challenge expired, try again" }, { status: 400 });
   const body = await req.json();
-  const key = db
+  const key = await db
     .select()
     .from(schema.passkeys)
     .where(and(eq(schema.passkeys.id, String(body.id)), eq(schema.passkeys.userId, user.id)))
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       credential: { id: key.id, publicKey: b64.decode(key.publicKey), counter: key.counter, transports: key.transports?.split(",") },
     });
     if (!v.verified) return NextResponse.json({ error: "Could not verify" }, { status: 400 });
-    db.update(schema.passkeys).set({ counter: v.authenticationInfo.newCounter }).where(eq(schema.passkeys.id, key.id)).run();
+    await db.update(schema.passkeys).set({ counter: v.authenticationInfo.newCounter }).where(eq(schema.passkeys.id, key.id)).run();
     const res = NextResponse.json({ ok: true });
     res.cookies.set(UNLOCK_COOKIE, await signUnlock({ uid: user.id, mins: user.lockAfterMinutes }), unlockCookieOptions);
     res.cookies.delete({ name: CHALLENGE_COOKIE, path: "/api/webauthn" });

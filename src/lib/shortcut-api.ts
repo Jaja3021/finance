@@ -8,8 +8,8 @@ export const unauthorized = () =>
     { status: 401 },
   );
 
-export function withApiUser<T>(req: Request, fn: (user: NonNullable<ReturnType<typeof userFromApiRequest>>) => Promise<T> | T) {
-  const user = userFromApiRequest(req);
+export async function withApiUser<T>(req: Request, fn: (user: NonNullable<Awaited<ReturnType<typeof userFromApiRequest>>>) => Promise<T> | T) {
+  const user = await userFromApiRequest(req);
   if (!user) return unauthorized();
   return fn(user);
 }

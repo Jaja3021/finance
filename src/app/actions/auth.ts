@@ -39,15 +39,15 @@ export async function signup(_: FormState, form: FormData): Promise<FormState> {
   const parsed = SignupSchema.safeParse(Object.fromEntries(form));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const { name, email, password, homeCurrency } = parsed.data;
-  if (db.select().from(schema.users).where(eq(schema.users.email, email)).get()) {
+  if (await db.select().from(schema.users).where(eq(schema.users.email, email)).get()) {
     return { error: "An account with that email already exists" };
   }
-  const user = db
+  const user = await db
     .insert(schema.users)
     .values({ name, email, homeCurrency, passwordHash: await bcrypt.hash(password, 12) })
     .returning()
     .get();
-  seedCategories(user.id);
+  await seedCategories(user.id);
   await startSession(user);
   redirect("/accounts?welcome=1");
 }
@@ -55,7 +55,7 @@ export async function signup(_: FormState, form: FormData): Promise<FormState> {
 export async function login(_: FormState, form: FormData): Promise<FormState> {
   const email = String(form.get("email") ?? "").trim().toLowerCase();
   const password = String(form.get("password") ?? "");
-  const user = db.select().from(schema.users).where(eq(schema.users.email, email)).get();
+  const user = await db.select().from(schema.users).where(eq(schema.users.email, email)).get();
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     return { error: "Wrong email or password" };
   }
@@ -107,7 +107,7 @@ export async function setPin(_: FormState, form: FormData): Promise<FormState> {
   const minutes = Math.min(120, Math.max(1, Number(form.get("minutes") ?? 5)));
   if (!/^\d{4,8}$/.test(pin)) return { error: "PIN must be 4 to 8 digits" };
   if (pin !== confirm) return { error: "PINs don't match" };
-  const updated = db
+  const updated = await db
     .update(schema.users)
     .set({ pinHash: await bcrypt.hash(pin, 10), lockAfterMinutes: minutes })
     .where(eq(schema.users.id, user.id))
@@ -121,8 +121,8 @@ export async function removePin(_: FormState, form: FormData): Promise<FormState
   const user = await requireUser();
   const password = String(form.get("password") ?? "");
   if (!(await bcrypt.compare(password, user.passwordHash))) return { error: "Wrong password" };
-  db.update(schema.users).set({ pinHash: null }).where(eq(schema.users.id, user.id)).run();
-  db.delete(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).run();
+  await db.update(schema.users).set({ pinHash: null }).where(eq(schema.users.id, user.id)).run();
+  await db.delete(schema.passkeys).where(eq(schema.passkeys.userId, user.id)).run();
   const jar = await cookies();
   jar.set(SESSION_COOKIE, await signSession({ uid: user.id, pin: false }), sessionCookieOptions);
   jar.delete(UNLOCK_COOKIE);
