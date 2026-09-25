@@ -18,6 +18,8 @@ function open() {
   if (REMOTE_DB) {
     return createClient({ url: process.env.TURSO_DATABASE_URL!, authToken: process.env.TURSO_AUTH_TOKEN });
   }
+  // Vercel functions have no lasting disk, so a local file would silently lose data.
+  if (process.env.VERCEL) throw new Error("No database connected: add a Turso database to this Vercel project (Storage tab), then redeploy.");
   fs.mkdirSync(/*turbopackIgnore: true*/ path.dirname(DB_PATH), { recursive: true });
   return createClient({ url: `file:${path.relative(process.cwd(), DB_PATH).replace(/\\/g, "/")}` });
 }
